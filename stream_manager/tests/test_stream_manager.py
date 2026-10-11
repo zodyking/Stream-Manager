@@ -4,7 +4,7 @@ from pathlib import Path
 from onvif_proxy.engine import RecordingEngine
 from onvif_proxy.ha_client import Playback
 from onvif_proxy.models import camera_from_dict
-from onvif_proxy.stream_manager import StreamManager, ffmpeg_still
+from onvif_proxy.stream_manager import StreamManager, ffmpeg_still, with_source_bind
 
 
 class FakeHa:
@@ -108,6 +108,30 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-profile:v baseline", published)
         self.assertIn("bitrate=512k", published)
         self.assertNotIn("#video=h264", published)
+
+    async def test_listening_network_binds_the_rtsp_pull(self):
+        cam = camera_from_dict(
+            {
+                "id": "gate",
+                "name": "Gate",
+                "listen_ip": "192.0.2.50",
+                "interface": "guest",
+                "source_ip": "192.0.2.10",
+                "source_interface": "cameras",
+                "fallback_source_id": "cam",
+                "sources": [{"id": "cam", "type": "rtsp", "name": "Gate", "url": "rtsp://camera.example/gate"}],
+            }
+        )
+        streams, engine = manager(Path("."))
+        await streams.sync([cam], {}, FakeHa(Playback(None, None)))
+        published = engine.streams["gate"]
+        self.assertIn("-localaddr 192.0.2.10 -i {input}", published)
+        self.assertTrue(published.startswith("ffmpeg:rtsp://camera.example/gate#video="))
+        self.assertEqual(streams.runtime["gate"]["rtsp_url"], "rtsp://192.0.2.50:8554/gate")
+
+    def test_host_route_does_not_bind_a_local_address(self):
+        src = with_source_bind("ffmpeg:rtsp://camera.example/live#video=-c:v libx264", "")
+        self.assertNotIn("localaddr", src)
 
     def test_still_image_template(self):
         src = ffmpeg_still("C:/data/images/off.jpg")

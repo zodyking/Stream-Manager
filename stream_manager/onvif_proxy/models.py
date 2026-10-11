@@ -76,6 +76,8 @@ class Camera:
     enabled: bool = True
     interface: str = ""
     listen_ip: str = "127.0.0.1"
+    source_interface: str = ""
+    source_ip: str = ""
     username: str = ""
     password: str = ""
     rules_enabled: bool = False
@@ -235,7 +237,13 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
     try:
         IPv4Address(listen_ip)
     except ValueError as exc:
-        raise ValueError("listen_ip must be an IPv4 address") from exc
+        raise ValueError("broadcast address must be an IPv4 address") from exc
+    source_ip = str(raw.get("source_ip") or "").strip()
+    if source_ip:
+        try:
+            IPv4Address(source_ip)
+        except ValueError as exc:
+            raise ValueError("listening network must be an IPv4 address") from exc
     sources = [source_from_dict(item) for item in raw.get("sources") or []]
     if not sources:
         raise ValueError("add at least one source")
@@ -258,6 +266,8 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
         enabled=bool(raw.get("enabled", True)),
         interface=str(raw.get("interface") or "").strip(),
         listen_ip=listen_ip,
+        source_interface=str(raw.get("source_interface") or "").strip(),
+        source_ip=source_ip,
         username=str(raw.get("username") or ""),
         password=str(raw.get("password") or ""),
         rules_enabled=bool(raw.get("rules_enabled", False)),

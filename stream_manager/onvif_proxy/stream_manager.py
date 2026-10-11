@@ -18,6 +18,28 @@ def ffmpeg_still(target: str) -> str:
     return f'ffmpeg:{target}#input=-loop 1 -framerate 5 -i "{{input}}"#video=h264'
 
 
+def with_source_bind(src: str, source_ip: str) -> str:
+    """Open RTSP and remote images from the listening address."""
+    if not source_ip or not src.startswith("ffmpeg:"):
+        return src
+    target = src[len("ffmpeg:") :].split("#", 1)[0]
+    remote_http = target.startswith(("http://", "https://")) and "127.0.0.1" not in target and "localhost" not in target
+    if not (target.startswith(("rtsp://", "rtsps://")) or remote_http):
+        return src
+    for needle in ("-i {input}", '-i "{input}"'):
+        if needle in src:
+            return src.replace(needle, f"-localaddr {source_ip} {needle}", 1)
+    if target.startswith(("rtsp://", "rtsps://")):
+        template = (
+            "-fflags nobuffer -flags low_delay -timeout 5000000 "
+            "-user_agent go2rtc/ffmpeg -rtsp_flags prefer_tcp "
+            f"-localaddr {source_ip} -i {{input}}"
+        )
+    else:
+        template = f"-fflags nobuffer -flags low_delay -localaddr {source_ip} -i {{input}}"
+    return src + "#input=" + template
+
+
 def with_output(src: str, output: OutputSettings) -> str:
     """Encode the published stream to the ONVIF profile instead of passing the source through."""
     if src.endswith("#video=h264"):
@@ -142,7 +164,7 @@ class StreamManager:
                 self._applied.pop(camera.id, None)
             self.runtime[camera.id] = record
             return
-        src = with_output(src, camera.output)
+        src = with_source_bind(with_output(src, camera.output), camera.source_ip)
         record["producer"] = src
         if self._applied.get(camera.id) != src:
             engine_error = await asyncio.to_thread(self.engine.upsert, camera.id, src)

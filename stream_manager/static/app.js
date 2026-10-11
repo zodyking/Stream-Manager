@@ -363,6 +363,8 @@
       enabled: true,
       interface: "",
       listen_ip: "127.0.0.1",
+      source_interface: "",
+      source_ip: "",
       username: "",
       password: "",
       rules_enabled: false,
@@ -379,6 +381,9 @@
     camera.listen_ip = form.listen_ip.value;
     const option = form.iface.selectedOptions[0];
     camera.interface = option ? option.getAttribute("data-name") || "" : camera.interface;
+    const sourceOption = form.source_iface.selectedOptions[0];
+    camera.source_ip = sourceOption ? sourceOption.value : "";
+    camera.source_interface = sourceOption ? sourceOption.getAttribute("data-name") || "" : "";
     camera.username = form.username.value;
     camera.password = form.password.value;
     camera.rules_enabled = form.rules_enabled.checked;
@@ -477,11 +482,21 @@
       if (!known.some(function (item) { return item.ip === camera.listen_ip; })) {
         known.unshift({ name: camera.interface || "saved", ip: camera.listen_ip });
       }
-      const ifaceOptions = known.map(function (item) {
-        const selected = camera.listen_ip === item.ip;
+      const sourceKnown = interfaces.slice();
+      if (camera.source_ip && !sourceKnown.some(function (item) { return item.ip === camera.source_ip; })) {
+        sourceKnown.unshift({ name: camera.source_interface || "saved", ip: camera.source_ip });
+      }
+      function ifaceOption(item, selected) {
         return '<option value="' + esc(item.ip) + '" data-name="' + esc(item.name) + '"' + (selected ? " selected" : "") + ">" +
           esc(item.name + " (" + item.ip + ")") + "</option>";
+      }
+      const ifaceOptions = known.map(function (item) {
+        return ifaceOption(item, camera.listen_ip === item.ip);
       }).join("");
+      const sourceOptions = '<option value="" data-name=""' + (camera.source_ip ? "" : " selected") + ">Follow the host route</option>" +
+        sourceKnown.map(function (item) {
+          return ifaceOption(item, camera.source_ip === item.ip);
+        }).join("");
       const fallback = camera.sources.map(function (source) {
         return '<option value="' + esc(source.id) + '"' + (camera.fallback_source_id === source.id ? " selected" : "") + ">" + esc(source.name || source.id) + "</option>";
       }).join("");
@@ -503,9 +518,15 @@
         '<datalist id="all-entities">' + allList + "</datalist>" +
         '<section class="card"><h2>Camera</h2><div class="fields"><label class="field">Name<input name="name" required value="' + esc(camera.name) + '"></label>' +
         '<label class="switch"><input type="checkbox" name="enabled"' + (camera.enabled ? " checked" : "") + '><span>Enabled</span></label></div></section>' +
-        '<section class="card"><h2>Network</h2><div class="fields two"><label class="field">Network interface<select name="iface">' + ifaceOptions + "</select></label>" +
-        '<label class="field">Listen IP<input name="listen_ip" required value="' + esc(camera.listen_ip) + '"></label></div>' +
-        "<p class=\"hint\">Discovery and the advertised ONVIF and RTSP addresses use this IP. Changing the picture source does not change those URLs.</p></section>" +
+        '<section class="card"><h2>Networks</h2>' +
+        "<p class=\"hint\">Pull the camera on one network and publish the ONVIF stream on another. The published address stays the same when the picture source changes.</p>" +
+        '<h3 class="fixed-title">Listening network</h3>' +
+        '<label class="field">Reach the camera from<select name="source_iface">' + sourceOptions + "</select></label>" +
+        "<p class=\"hint\">RTSP and remote images open from this address. Follow the host route when the host already has a path to the camera. Home Assistant camera entities are fetched by Home Assistant.</p>" +
+        '<h3 class="fixed-title">Broadcast network</h3>' +
+        '<div class="fields two"><label class="field">Publish the stream on<select name="iface">' + ifaceOptions + "</select></label>" +
+        '<label class="field">Broadcast address<input name="listen_ip" required value="' + esc(camera.listen_ip) + '"></label></div>' +
+        "<p class=\"hint\">ONVIF discovery and the RTSP address clients use stay on this network.</p></section>" +
         '<section class="card"><h2>ONVIF access</h2><div class="fields two"><label class="field">Username<input name="username" value="' + esc(camera.username || "") + '" autocomplete="off"></label>' +
         '<label class="field">Password<input name="password" type="password" value="' + esc(camera.password || "") + '" autocomplete="off"></label></div>' +
         "<p class=\"hint\">Leave both empty for an open lab device. When set, stream and profile calls require a UsernameToken or HTTP Digest. Time and capabilities stay open.</p></section>" +
@@ -532,6 +553,11 @@
         form.listen_ip.value = selected.value;
         camera.interface = selected.getAttribute("data-name") || "";
         camera.listen_ip = selected.value;
+      });
+      form.source_iface.addEventListener("change", function () {
+        const selected = form.source_iface.selectedOptions[0];
+        camera.source_ip = selected.value;
+        camera.source_interface = selected.getAttribute("data-name") || "";
       });
       form.addEventListener("change", function (event) {
         if (event.target.name !== "stype") return;
@@ -650,6 +676,10 @@
       '<section class="card"><div class="hero"><div class="hero-icon ' + state.kind + '">' + iconCamera + "</div><div>" +
       '<p class="hero-title">' + esc(statusSentence(camera)) + "</p>" +
       '<p class="hint">' + esc(statusDetail(camera)) + "</p></div></div>" +
+      '<p class="eyebrow">Networks</p>' + factList([
+        ["Listening", camera.source_ip ? (camera.source_interface ? camera.source_interface + " (" + camera.source_ip + ")" : camera.source_ip) : "Follow the host route"],
+        ["Broadcast", camera.interface ? camera.interface + " (" + camera.listen_ip + ")" : camera.listen_ip],
+      ]) +
       '<p class="eyebrow">ONVIF profile</p><h3>main</h3>' + factList(profileFacts(camera).concat(publishedFacts(camera).slice(0, 5), encoderFixed(camera))) +
       (runtime.error ? '<p class="banner error" role="alert">' + esc(runtime.error) + "</p>" : "") +
       (runtime.engine_error ? '<p class="banner error" role="alert">' + esc(runtime.engine_error) + "</p>" : "") +
