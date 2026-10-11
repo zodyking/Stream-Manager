@@ -119,6 +119,24 @@ class AliasTests(unittest.TestCase):
             addresses.ensure("eth0", "192.168.0.250", 24, "cam", link="smvcam", mac="02:00:00:00:00:01")
             self.assertIn("ip addr del 192.168.0.250/24 dev eth0", run.joined())
 
+    def test_restore_tolerates_an_address_that_is_already_assigned(self):
+        class Assigned(Recorder):
+            def __call__(self, args):
+                self.calls.append(list(args))
+                result = _ok()
+                if args[1:3] == ["addr", "add"]:
+                    result.returncode = 2
+                    result.stderr = "Error: ipv4: Address already assigned."
+                return result
+
+        with tempfile.TemporaryDirectory() as folder:
+            run = Assigned()
+            addresses = book(folder, run)
+            addresses._entries["192.168.0.249"] = {"interface": "eth0", "prefix": 24, "camera_id": "cam", "link": "smvcam", "mac": "02:00:00:00:00:01"}
+            with self.assertNoLogs("onvif_proxy.aliases", level="WARNING"):
+                addresses.restore()
+            self.assertTrue(any(call[:3] == ["ip", "rule", "add"] for call in run.calls))
+
     def test_loopback_does_not_reserve_an_address(self):
         with tempfile.TemporaryDirectory() as folder:
             addresses = book(folder, Recorder())
@@ -131,9 +149,10 @@ class AliasTests(unittest.TestCase):
 
 def _ok():
     class Result:
-        returncode = 0
-        stdout = ""
-        stderr = ""
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = ""
+            self.stderr = ""
 
     return Result()
 

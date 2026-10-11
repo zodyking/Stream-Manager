@@ -21,7 +21,7 @@ class IngressSlashTests(unittest.IsolatedAsyncioTestCase):
         text = await response.text()
         self.assertEqual(response.status, 200)
         self.assertIn("Stream Manager", text)
-        self.assertIn('src="static/app.js?v=106"', text)
+        self.assertIn('src="static/app.js?v=107"', text)
 
     async def test_slashed_static_still_loads(self):
         response = await self.client.get("///static/app.js")

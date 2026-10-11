@@ -1,4 +1,4 @@
-﻿"""WS-Discovery messages and the multicast listener that answers ONVIF probes."""
+"""WS-Discovery messages and the multicast listener that answers ONVIF probes."""
 
 from __future__ import annotations
 

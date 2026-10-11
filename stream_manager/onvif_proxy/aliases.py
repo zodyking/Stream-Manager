@@ -166,6 +166,8 @@ class AddressBook:
         return binary
 
     def _call(self, args: list[str], *, allow: tuple[str, ...] = ()) -> str:
+        if "exist" in allow:
+            allow = (*allow, "already assigned")
         completed = self._run(args)
         error = (completed.stderr or "").strip()
         if completed.returncode and not any(word in error.lower() for word in allow):

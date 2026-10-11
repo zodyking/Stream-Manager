@@ -13,6 +13,13 @@
   const iconOverview = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>';
   const iconCamera = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 8h4l2-2h4l2 2h4v11H4z"></path><circle cx="12" cy="13" r="3"></circle></svg>';
 
+  const iconPlus = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>';
+  const iconCheck = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg>';
+
+  const iconUp = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"></path></svg>';
+  const iconDown = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>';
+  const iconTrash = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"></path></svg>';
+
   const sourceLabels = { rtsp: "RTSP", ha_camera: "Home Assistant camera", onvif: "ONVIF device", image: "Still image" };
   const operatorLabels = [["eq", "equals"], ["ne", "does not equal"], ["gt", "number above"], ["lt", "number below"]];
 
@@ -21,16 +28,7 @@
   }
 
   function syncColorScheme() {
-    const raw = getComputedStyle(document.documentElement).getPropertyValue("--primary-background-color").trim();
-    const match = raw.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/) || raw.match(/^#([0-9a-f]{6})$/i);
-    let dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    if (match) {
-      const channels = match[2] !== undefined && raw.indexOf("#") !== 0
-        ? [match[1], match[2], match[3]]
-        : [parseInt(match[1].slice(0, 2), 16), parseInt(match[1].slice(2, 4), 16), parseInt(match[1].slice(4, 6), 16)];
-      const luminance = (Number(channels[0]) * 299 + Number(channels[1]) * 587 + Number(channels[2]) * 114) / 1000;
-      dark = luminance < 140;
-    }
+    const dark = !window.matchMedia("(prefers-color-scheme: light)").matches;
     document.documentElement.dataset.scheme = dark ? "dark" : "light";
     document.documentElement.style.colorScheme = dark ? "dark" : "light";
   }
@@ -87,6 +85,17 @@
     if (event.key === "Escape") setMenu(false);
   });
   main.addEventListener("click", function (event) {
+    const jump = event.target.closest("[data-scroll]");
+    if (jump) {
+      event.preventDefault();
+      const target = document.getElementById(jump.getAttribute("data-scroll"));
+      if (target) {
+        target.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+        const heading = target.querySelector("h2");
+        if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+      }
+      return;
+    }
     const button = event.target.closest(".copy-btn");
     if (!button) return;
     const value = button.getAttribute("data-copy") || "";
@@ -113,7 +122,8 @@
       '<img class="brand-lockup brand-on-dark" src="' + rooted("/static/brand/stream-manager-horizontal-dark.svg") + '" alt="Stream Manager">' +
       '<img class="brand-lockup brand-on-light" src="' + rooted("/static/brand/stream-manager-horizontal-light.svg") + '" alt="">' +
       "</div>";
-    html += '<a class="nav-link" href="#/"' + (overviewOn ? ' aria-current="page"' : "") + '><span class="nav-icon">' + iconOverview + '</span><span class="label">Overview</span></a>';
+    html += '<a class="nav-link" href="#/"' + (overviewOn ? ' aria-current="page"' : "") + '><span class="nav-icon">' + iconOverview + '</span><span class="label">All cameras</span></a>';
+    html += '<a class="nav-link" href="#/cameras/new"' + (current.name === "edit" && !current.id ? ' aria-current="page"' : "") + '><span class="nav-icon">' + iconPlus + '</span><span class="label">Add camera</span></a>';
     if (cameras && cameras.length) {
       html += '<div class="nav-section">Cameras</div>';
       html += cameras.map(function (camera) {
@@ -127,14 +137,10 @@
     nav.innerHTML = html;
   }
 
-  function pageHead(title, action) {
-    return '<div class="page-head"><h1>' + esc(title) + "</h1>" + (action || "") + "</div>";
-  }
-
   function copyRow(label, value) {
     if (!value) return "";
     return '<div class="copy-row"><span class="copy-k">' + esc(label) + "</span><code>" + esc(value) +
-      '</code><button type="button" class="btn-quiet copy-btn" data-copy="' + esc(value) + '"><span>Copy</span></button></div>';
+      '</code><button type="button" class="copy-btn" data-copy="' + esc(value) + '" aria-label="Copy ' + esc(label) + ' address"><span>Copy</span></button></div>';
   }
 
   function copyList(pairs) {
@@ -154,36 +160,49 @@
     const haDetail = ha.error || (ha.mode === "supervisor" ? "Using the Supervisor token." : ha.url || "Add a Home Assistant URL and token to use camera entities.");
     const discoveryKind = discovery.ok ? "live" : "still";
     const discoveryLabel = discovery.ok ? "Ready" : "Check bindings";
-    const binds = (discovery.bindings || []).map(function (item) {
-      return item.ip + (item.error ? " — " + item.error : " — listening");
-    });
-    const discoveryDetail = binds[0] || discovery.note || "No discovery sockets yet.";
+    const bindings = discovery.bindings || [];
+    const failed = bindings.find(function (item) { return item.error && item.ip !== "127.0.0.1"; });
+    const answering = bindings.filter(function (item) { return !item.error; }).map(function (item) { return item.ip; });
+    const discoveryDetail = failed
+      ? failed.ip + ": " + failed.error
+      : answering.length ? "Answering on " + answering.join(", ") + "." : "Add a camera on a real network to be discovered.";
     const engine = status.engine || {};
     const engineKind = engine.running ? "live" : engine.binary ? "bad" : "still";
     const engineLabel = engine.running ? "Running" : engine.binary ? "Not responding" : "Binary not found";
     const engineDetail = engine.error || (engine.running ? "Publishing the active picture on the stable RTSP URL." : "ONVIF addresses are still advertised.");
 
     function tile(title, kind, label, detail) {
-      return '<section class="card"><div class="stat-top"><span class="dot ' + kind + '"></span><div class="stat-copy"><strong>' + esc(title) +
-        '</strong><span class="state">' + esc(label) + "</span></div></div><p class=\"hint\">" + esc(detail) + "</p></section>";
+      return '<section class="health ' + kind + '"><span class="dot ' + kind + '"></span><div class="health-copy"><span class="health-title">' + esc(title) +
+        '</span><strong>' + esc(label) + '</strong><span class="help">' + esc(detail) + "</span></div></section>";
     }
 
     const cards = cameras.length
-      ? '<div class="camera-list">' + cameras.map(function (camera) {
+      ? '<div class="camera-grid">' + cameras.map(function (camera) {
           const state = cameraState(camera);
           const runtime = camera.runtime || {};
           const urls = camera.urls || {};
-          return '<article class="card"><div class="entity-top"><div class="entity-copy"><div class="entity-name">' + esc(camera.name) +
-            '</div><p class="hint">' + esc(runtime.source_name || "No active source") + " · " + esc(outputSummary(camera)) + "</p></div>" +
-            '<span class="state"><span class="dot ' + state.kind + '"></span>' + esc(state.label) + "</span></div>" +
-            copyList([["RTSP", urls.rtsp], ["ONVIF", urls.onvif]]) +
-            '<div class="row"><a class="btn-quiet" href="#/cameras/' + camera.id + '">Edit</a>' +
-            '<a class="btn-quiet" href="#/cameras/' + camera.id + '/status">Status</a></div></article>';
+          const output = outputOf(camera);
+          const address = camera.listen_ip;
+          return '<article class="card camera-card"><div class="camera-top">' +
+            '<span class="camera-icon ' + state.kind + '">' + iconCamera + "</span>" +
+            '<div class="camera-copy"><h2><a href="#/cameras/' + camera.id + '/status">' + esc(camera.name) + "</a></h2>" +
+            '<p class="help">' + esc(runtime.source_name || "No active source") + "</p></div>" +
+            '<span class="pill ' + state.kind + '"><span class="dot ' + state.kind + '"></span>' + esc(state.label) + "</span></div>" +
+            '<dl class="specs"><div><dt>Address</dt><dd class="mono">' + esc(address) + "</dd></div>" +
+            '<div><dt>Video</dt><dd>' + output.height + "p · " + output.framerate + " fps</dd></div>" +
+            (camera.mac ? '<div><dt>MAC</dt><dd class="mono">' + esc(camera.mac) + "</dd></div>" : "") + "</dl>" +
+            copyList([["ONVIF", urls.onvif], ["RTSP", urls.rtsp]]) +
+            '<div class="row card-actions"><a class="btn-secondary" href="#/cameras/' + camera.id + '">Edit</a>' +
+            '<a class="btn-ghost" href="#/cameras/' + camera.id + '/status">Live status</a></div></article>';
         }).join("") + "</div>"
-      : '<div class="card empty"><h2>No virtual cameras</h2><p class="hint">Add a camera to publish a stable ONVIF device.</p><a class="btn" href="#/cameras/new">Add camera</a></div>';
+      : '<div class="card empty"><span class="camera-icon live">' + iconCamera + '</span><h2>Publish your first camera</h2>' +
+        '<p class="help">Pick a Home Assistant camera, RTSP stream, ONVIF device or still image. Stream Manager gives it its own address so UniFi Protect and other ONVIF clients can adopt it.</p>' +
+        '<a class="btn" href="#/cameras/new">' + iconPlus + "Add camera</a></div>";
 
-    main.innerHTML = pageHead("Overview", '<a class="btn" href="#/cameras/new">Add camera</a>') +
-      '<div class="stat-grid">' +
+    main.innerHTML = '<header class="page-head"><div class="page-title"><h1>Cameras</h1>' +
+      (cameras.length ? '<span class="count">' + cameras.length + "</span>" : "") + "</div>" +
+      (cameras.length ? '<a class="btn" href="#/cameras/new">' + iconPlus + "Add camera</a>" : "") + "</header>" +
+      '<div class="health-strip">' +
       tile("Home Assistant", haKind, haLabel, haDetail) +
       tile("Discovery", discoveryKind, discoveryLabel, discoveryDetail) +
       tile("Stream engine", engineKind, engineLabel, engineDetail) +
@@ -221,20 +240,6 @@
       h264_profile: output.h264_profile || "Main",
       gov_length: Number(output.gov_length) || 30,
     };
-  }
-
-  function outputSummary(camera) {
-    const output = outputOf(camera);
-    return "ONVIF profile main · " + output.width + "×" + output.height + " · " + output.h264_profile + " · " + output.framerate + " fps";
-  }
-
-  function profileFacts(camera) {
-    return [
-      ["Profile name", camera.name || "Uses the camera name"],
-      ["Token", "main"],
-      ["Fixed", "Yes — clients cannot add or remove profiles"],
-      ["ONVIF profile", "Profile S"],
-    ];
   }
 
   function encoderFixed(camera) {
@@ -278,21 +283,16 @@
     const profileOptions = h264Profiles.map(function (profile) {
       return '<option value="' + profile + '"' + (output.h264_profile === profile ? " selected" : "") + ">" + profile + "</option>";
     }).join("");
-    return '<section class="card" id="onvif-profile">' +
-      '<p class="eyebrow">ONVIF profile</p>' +
-      '<div class="profile-head"><h2>main</h2><span class="state"><span class="dot live"></span>Profile S</span></div>' +
-      '<p class="hint">This is the media profile ONVIF clients receive. The token stays main, so the stream URL does not change when the picture source changes.</p>' +
-      factList(profileFacts(camera)) +
-      '<h3 class="fixed-title">Video encoder</h3>' +
-      '<p class="hint">These settings are stored on profile main and encoded into the RTSP stream.</p>' +
-      '<div class="fields two">' +
+    return '<div class="fields three">' +
       '<label class="field">Resolution<select name="out_size">' + sizeOptions + "</select></label>" +
-      '<label class="field">H.264 codec profile<select name="out_profile">' + profileOptions + "</select></label>" +
-      '<label class="field">Frame rate<input name="out_fps" type="number" min="1" max="30" required value="' + esc(output.framerate) + '"></label>' +
-      '<label class="field">Bitrate (kbps)<input name="out_bitrate" type="number" min="128" max="8192" required value="' + esc(output.bitrate_kbps) + '"></label>' +
-      '<label class="field">Keyframe interval (seconds)<input name="out_gop" type="number" min="1" max="4" required value="' + esc(keyframeSeconds(output)) + '"></label>' +
-      '<p class="hint">UniFi Protect adopts H.264 Main at a 2 second keyframe interval, about 2,000–4,000 kbps, over RTSP TCP.</p>' +
-      '</div><h3 class="fixed-title">Not editable</h3>' + factList(encoderFixed(camera)) + "</section>";
+      '<label class="field">Frame rate<span class="suffix-field"><input name="out_fps" type="number" min="1" max="30" required value="' + esc(output.framerate) + '"><span class="suffix">fps</span></span></label>' +
+      '<label class="field">Bitrate<span class="suffix-field"><input name="out_bitrate" type="number" min="128" max="8192" step="64" required value="' + esc(output.bitrate_kbps) + '"><span class="suffix">kbps</span></span></label>' +
+      '<label class="field">H.264 profile<select name="out_profile">' + profileOptions + "</select></label>" +
+      '<label class="field">Keyframe every<span class="suffix-field"><input name="out_gop" type="number" min="1" max="4" required value="' + esc(keyframeSeconds(output)) + '"><span class="suffix">sec</span></span></label>' +
+      "</div>" +
+      '<details class="disclosure"><summary>Fixed encoder settings</summary>' +
+      '<p class="help">Every camera publishes two ONVIF profiles, main and sub, on the same stream. These values cannot be changed.</p>' +
+      factList(encoderFixed(camera)) + "</details>";
   }
 
   function closePickers(except) {
@@ -437,7 +437,7 @@
     };
   }
 
-  function sourceBlock(source, index) {
+  function sourceBlock(source, index, list) {
     const types = ["rtsp", "ha_camera", "onvif", "image"].map(function (type) {
       return '<option value="' + type + '"' + (source.type === type ? " selected" : "") + ">" + sourceLabels[type] + "</option>";
     }).join("");
@@ -456,12 +456,16 @@
         '<label class="field">Or image URL<input name="simg" data-i="' + index + '" value="' + esc(source.image_url) + '" placeholder="https://example.com/standby.jpg"></label>' +
         '<label class="field">Upload still<input name="supload" data-i="' + index + '" type="file" accept="image/jpeg,image/png,image/webp"></label>';
     }
-    return '<article class="card"><div class="card-head"><h3>' + esc(source.name || "Source") + "</h3>" +
-      '<div class="quiet-actions"><button type="button" class="btn-quiet" data-act="up" data-i="' + index + '">Move up</button>' +
-      '<button type="button" class="btn-quiet" data-act="down" data-i="' + index + '">Move down</button>' +
-      '<button type="button" class="btn-quiet btn-danger" data-act="remove-source" data-i="' + index + '">Remove</button></div></div>' +
-      '<div class="fields"><label class="field">Name<input name="sname" data-i="' + index + '" value="' + esc(source.name) + '"></label>' +
-      '<label class="field">Type<select name="stype" data-i="' + index + '">' + types + "</select></label>" + extra + "</div></article>";
+    const label = esc(source.name || "Source");
+    return '<article class="subcard"><div class="subcard-head"><span class="badge">' + (index + 1) + "</span><h3>" + label + "</h3>" +
+      '<span class="type-tag">' + esc(sourceLabels[source.type] || source.type) + "</span>" +
+      '<div class="tools">' +
+      '<button type="button" class="tool" data-act="up" data-i="' + index + '" aria-label="Move ' + label + ' up"' + (index === 0 ? " disabled" : "") + ">" + iconUp + "</button>" +
+      '<button type="button" class="tool" data-act="down" data-i="' + index + '" aria-label="Move ' + label + ' down"' + (list && index === list.length - 1 ? " disabled" : "") + ">" + iconDown + "</button>" +
+      '<button type="button" class="tool danger" data-act="remove-source" data-i="' + index + '" aria-label="Remove ' + label + '">' + iconTrash + "</button></div></div>" +
+      '<div class="fields two"><label class="field">Name<input name="sname" data-i="' + index + '" value="' + esc(source.name) + '"></label>' +
+      '<label class="field">Type<select name="stype" data-i="' + index + '">' + types + "</select></label></div>" +
+      '<div class="fields">' + extra + "</div></article>";
   }
 
   function ruleBlock(rule, index, sources) {
@@ -476,9 +480,44 @@
       '<input name="rvalue" data-i="' + index + '" aria-label="Value" value="' + esc(rule.value) + '" placeholder="on">' +
       '<span class="rule-word">show</span>' +
       '<select name="rsource" data-i="' + index + '" aria-label="Source">' + options + "</select>" +
-      '<div class="quiet-actions"><button type="button" class="btn-quiet" data-act="rule-up" data-i="' + index + '" aria-label="Move rule up">Up</button>' +
-      '<button type="button" class="btn-quiet" data-act="rule-down" data-i="' + index + '" aria-label="Move rule down">Down</button>' +
-      '<button type="button" class="btn-quiet btn-danger" data-act="remove-rule" data-i="' + index + '">Remove</button></div></div>';
+      '<div class="tools"><button type="button" class="tool" data-act="rule-up" data-i="' + index + '" aria-label="Move rule up">' + iconUp + "</button>" +
+      '<button type="button" class="tool" data-act="rule-down" data-i="' + index + '" aria-label="Move rule down">' + iconDown + "</button>" +
+      '<button type="button" class="tool danger" data-act="remove-rule" data-i="' + index + '" aria-label="Remove rule">' + iconTrash + "</button></div></div>";
+  }
+
+  function formSection(step, id, title, lead, body) {
+    return '<section class="card section" id="' + id + '" aria-labelledby="' + id + '-title">' +
+      '<header class="section-head"><span class="step" aria-hidden="true">' + step + "</span><div>" +
+      '<h2 id="' + id + '-title">' + esc(title) + '</h2><p class="lead">' + esc(lead) + "</p></div></header>" +
+      '<div class="section-body">' + body + "</div></section>";
+  }
+
+  function summaryPanel(camera, id) {
+    const urls = camera.urls || {};
+    const address = camera.virtual_ip && camera.listen_ip ? camera.listen_ip : "";
+    const rows = [];
+    if (urls.onvif) rows.push(["ONVIF", urls.onvif]);
+    if (urls.rtsp) rows.push(["RTSP", urls.rtsp]);
+    const login = camera.username ? "Use " + camera.username + " and the password above." : "Any username and password work.";
+    const steps = [
+      [!!id, "Save the camera", id ? "Published at " + (address || camera.listen_ip) + "." : "Stream Manager reserves an address on your network."],
+      [false, "Turn on discovery in Protect", "Settings › System › Discover Third-Party Cameras."],
+      [false, "Click to Adopt", login],
+    ];
+    const toc = [["sec-basics", "Camera"], ["sec-sources", "Picture sources"], ["sec-network", "Network"], ["sec-video", "Video output"], ["sec-automation", "Automatic switching"]];
+    return '<aside class="summary" aria-label="Camera summary">' +
+      '<section class="card summary-card"><p class="eyebrow">Published as</p>' +
+      '<p class="summary-address">' + esc(address || (id ? camera.listen_ip : "Assigned on save")) + "</p>" +
+      (camera.virtual_ip && camera.mac ? '<p class="help mono">MAC ' + esc(camera.mac) + (camera.link ? "" : " · shared with host") + "</p>" : "") +
+      (rows.length ? copyList(rows) : "") + "</section>" +
+      '<section class="card summary-card"><p class="eyebrow">Add to UniFi Protect</p><ol class="checklist">' +
+      steps.map(function (step) {
+        return '<li class="' + (step[0] ? "done" : "") + '"><span class="tick" aria-hidden="true">' + (step[0] ? iconCheck : "") + "</span><div><strong>" +
+          esc(step[1]) + "</strong><span>" + esc(step[2]) + "</span></div></li>";
+      }).join("") + "</ol></section>" +
+      '<nav class="toc" aria-label="Sections">' + toc.map(function (item) {
+        return '<a href="#' + item[0] + '" data-scroll="' + item[0] + '">' + esc(item[1]) + "</a>";
+      }).join("") + "</nav></aside>";
   }
 
   function assignedNote(loopback, address) {
@@ -537,54 +576,66 @@
       const allList = (entityPayload.entities || []).map(function (item) {
         return '<option value="' + esc(item.entity_id) + '"></option>';
       }).join("");
-      const urls = camera.urls || {};
-      const addressRows = [];
-      if (camera.virtual_ip && camera.listen_ip) addressRows.push(["Address", camera.listen_ip]);
-      if (camera.virtual_ip && camera.mac) addressRows.push(["MAC", camera.mac]);
-      if (urls.rtsp) addressRows.push(["RTSP", urls.rtsp], ["ONVIF", urls.onvif]);
-      const addresses = addressRows.length
-        ? '<section class="card"><h2>Addresses</h2><p class="hint">These stay the same when the picture source changes.</p>' +
-          copyList(addressRows) + "</section>"
-        : "";
-      main.innerHTML =
-        pageHead(id ? "Edit camera" : "Add camera", "") +
-        (entityPayload.connected ? "" : '<div class="banner info">Home Assistant entities are unavailable. RTSP, ONVIF, and image sources can still be saved. ' + esc(entityPayload.error || "") + "</div>") +
+      const state = cameraState(camera);
+      const head = '<header class="page-head">' +
+        '<div class="page-title"><a class="crumb" href="#/">Cameras</a>' +
+        "<h1>" + esc(id ? camera.name || "Camera" : "Add camera") + "</h1>" +
+        (id ? '<span class="pill ' + state.kind + '"><span class="dot ' + state.kind + '"></span>' + esc(state.label) + "</span>" : "") +
+        "</div>" +
+        (id ? '<div class="row"><a class="btn-secondary" href="#/cameras/' + id + '/status">Live status</a></div>' : "") +
+        "</header>";
+
+      const basics = formSection("1", "sec-basics", "Camera", "The name UniFi Protect and other ONVIF clients show for this device.",
+        '<div class="fields"><label class="field">Name<input name="name" required maxlength="64" value="' + esc(camera.name) + '" placeholder="Front printer"></label>' +
+        '<label class="switch"><input type="checkbox" name="enabled"' + (camera.enabled ? " checked" : "") + '><span>Publish this camera</span></label></div>');
+
+      const sources = formSection("2", "sec-sources", "Picture sources", "Where the video comes from. The first source is used unless automation picks another.",
+        '<div class="stack">' + camera.sources.map(sourceBlock).join("") + "</div>" +
+        '<button type="button" class="btn-ghost add" id="add-source">' + iconPlus + "Add source</button>");
+
+      const network = formSection("3", "sec-network", "Publish on your network", "The camera gets its own address on this network, so it shows up as a separate device.",
+        '<div class="fields">' +
+        '<label class="field">Network<select name="iface">' + ifaceOptions + "</select></label>" +
+        '<input type="hidden" name="listen_ip" value="' + esc(broadcastValue) + '">' +
+        '<p class="help" data-assigned>' + esc(assignedText) + "</p>" +
+        '<div class="banner warn" data-wireless role="note"' + (wirelessNote(broadcast) ? "" : " hidden") + ">" + esc(wirelessNote(broadcast)) + "</div>" +
+        '<label class="field" data-requested' + (loopbackBroadcast ? " hidden" : "") + '><span>Camera address <span class="optional">Optional</span></span>' +
+        '<input name="requested_ip" inputmode="decimal" autocomplete="off" value="' + esc(camera.requested_ip || "") + '" placeholder="Pick automatically"></label>' +
+        '<p class="help" data-requested' + (loopbackBroadcast ? " hidden" : "") + ">Set this to match a fixed IP you reserved in your router.</p>" +
+        "</div>" +
+        '<h3 class="subhead">Login</h3>' +
+        '<div class="fields two"><label class="field">Username<input name="username" value="' + esc(camera.username || "") + '" autocomplete="off" placeholder="Any"></label>' +
+        '<label class="field">Password<input name="password" type="password" value="' + esc(camera.password || "") + '" autocomplete="new-password" placeholder="Any"></label></div>' +
+        '<p class="help">UniFi Protect asks for these when you adopt the camera. Leave both empty to accept any login.</p>' +
+        '<details class="disclosure"' + (camera.source_ip ? " open" : "") + "><summary>Reach sources from a different network</summary>" +
+        '<div class="fields"><label class="field">Fetch sources from<select name="source_iface">' + sourceOptions + "</select></label>" +
+        '<p class="help">Only needed when the source camera sits on another network than the one above. Home Assistant camera entities are always fetched through Home Assistant.</p></div></details>');
+
+      const video = formSection("4", "sec-video", "Video output", "What ONVIF clients receive. Protect works best with H.264 Main, 2 second keyframes and 2,000–4,000 kbps.",
+        outputFields(camera));
+
+      const automation = formSection("5", "sec-automation", "Automatic switching", "Show a different source depending on a Home Assistant entity, such as a printer turning on.",
+        '<label class="switch"><input type="checkbox" name="rules_enabled"' + (camera.rules_enabled ? " checked" : "") + '><span>Switch sources from entity state</span></label>' +
+        '<div class="fields inset"><label class="field">When no rule matches, show<select name="fallback">' + fallback + "</select></label></div>" +
+        '<div class="rules">' +
+        (camera.rules.length ? camera.rules.map(function (rule, index) { return ruleBlock(rule, index, camera.sources); }).join("") : '<p class="help empty-line">No rules yet.</p>') +
+        "</div>" +
+        '<button type="button" class="btn-ghost add" id="add-rule">' + iconPlus + "Add rule</button>");
+
+      main.innerHTML = head +
+        (entityPayload.connected ? "" : '<div class="banner info">Home Assistant entities are unavailable. RTSP, ONVIF and image sources still work. ' + esc(entityPayload.error || "") + "</div>") +
+        '<div class="editor">' +
         '<form id="camera-form" class="stack">' +
         '<datalist id="camera-entities">' + cameraList + "</datalist>" +
         '<datalist id="all-entities">' + allList + "</datalist>" +
-        '<section class="card"><h2>Camera</h2><div class="fields"><label class="field">Name<input name="name" required value="' + esc(camera.name) + '"></label>' +
-        '<label class="switch"><input type="checkbox" name="enabled"' + (camera.enabled ? " checked" : "") + '><span>Enabled</span></label></div></section>' +
-        '<section class="card"><h2>Networks</h2>' +
-        "<p class=\"hint\">Pull the camera on one network and publish the ONVIF stream on another. The published address stays the same when the picture source changes.</p>" +
-        '<h3 class="fixed-title">Listening network</h3>' +
-        '<label class="field">Reach the camera from<select name="source_iface">' + sourceOptions + "</select></label>" +
-        "<p class=\"hint\">RTSP and remote images open from this address. Follow the host route when the host already has a path to the camera. Home Assistant camera entities are fetched by Home Assistant.</p>" +
-        '<h3 class="fixed-title">Broadcast network</h3>' +
-        '<label class="field">Publish the stream on<select name="iface">' + ifaceOptions + "</select></label>" +
-        '<input type="hidden" name="listen_ip" value="' + esc(broadcastValue) + '">' +
-        '<p class="hint" data-assigned>' + esc(assignedText) + "</p>" +
-        '<div class="banner info" data-wireless' + (wirelessNote(broadcast) ? "" : " hidden") + ">" + esc(wirelessNote(broadcast)) + "</div>" +
-        '<label class="field" data-requested' + (loopbackBroadcast ? " hidden" : "") + '>Camera address (optional)<input name="requested_ip" inputmode="decimal" autocomplete="off" value="' + esc(camera.requested_ip || "") + '" placeholder="Automatic"></label>' +
-        "<p class=\"hint\" data-requested" + (loopbackBroadcast ? " hidden" : "") + ">Leave empty to pick a free address. Set one to match a fixed IP you reserved in your router for this camera's MAC.</p></section>" +
-        '<section class="card"><h2>ONVIF access</h2><div class="fields two"><label class="field">Username<input name="username" value="' + esc(camera.username || "") + '" autocomplete="off"></label>' +
-        '<label class="field">Password<input name="password" type="password" value="' + esc(camera.password || "") + '" autocomplete="off"></label></div>' +
-        "<p class=\"hint\">UniFi Protect asks for a username and password when you adopt the camera. Set them here and enter the same pair in Protect. Leave both empty to accept any login.</p></section>" +
-        addresses +
-        outputFields(camera) +
-        '<div><h2 class="block-title">Sources</h2><div class="stack">' + camera.sources.map(sourceBlock).join("") +
-        '<div><button type="button" class="btn-quiet" id="add-source">Add source</button></div></div></div>' +
-        '<section class="card"><h2>Automation</h2>' +
-        '<label class="switch"><input type="checkbox" name="rules_enabled"' + (camera.rules_enabled ? " checked" : "") + '><span>Switch picture from entity state</span></label>' +
-        '<p class="hint">Leave this off to keep one fixed source. A practical pair is a printer switch that equals on to show the camera, with a still image as the fallback.</p>' +
-        '<div class="fields inset"><label class="field">Fallback source<select name="fallback">' + fallback + "</select></label></div>" +
-        '<div class="rules">' +
-        (camera.rules.length ? camera.rules.map(function (rule, index) { return ruleBlock(rule, index, camera.sources); }).join("") : '<p class="hint">No rules. The fallback source is used.</p>') +
-        "</div>" +
-        '<button type="button" class="btn-quiet" id="add-rule">Add rule</button></section>' +
-        '<p id="form-error" class="banner error" role="alert" hidden></p>' +
-        '<div class="form-actions"><button class="btn" type="submit">Save camera</button>' +
-        (id ? '<a class="btn-quiet" href="#/cameras/' + id + '/status">Live status</a><button type="button" class="btn-quiet btn-danger" id="delete-camera">Delete</button>' : "") +
-        "</div></form>";
+        basics + sources + network + video + automation +
+        '<div class="savebar"><p id="form-error" class="banner error" role="alert" hidden></p>' +
+        '<div class="row"><button class="btn" type="submit">' + (id ? "Save changes" : "Create camera") + "</button>" +
+        '<a class="btn-ghost" href="' + (id ? "#/cameras/" + id + "/status" : "#/") + '">Cancel</a>' +
+        (id ? '<button type="button" class="btn-ghost danger push" id="delete-camera">Delete camera</button>' : "") +
+        "</div></div></form>" +
+        summaryPanel(camera, id) +
+        "</div>";
 
       const form = document.getElementById("camera-form");
       const assignedInterface = camera.virtual_ip ? camera.interface : "";
@@ -735,20 +786,29 @@
     renderNav(cameras, { name: "status", id: id });
     const runtime = camera.runtime || {};
     const state = cameraState(camera);
+    const urls = camera.urls || {};
+    const network = [
+      ["Address", camera.listen_ip],
+      ["Network", camera.interface || "Loopback"],
+    ];
+    if (camera.virtual_ip && camera.mac) network.push(["MAC", camera.mac + (camera.link ? " · own virtual adapter" : " · shared with host")]);
+    network.push(["Sources fetched from", camera.source_ip ? (camera.source_interface ? camera.source_interface + " (" + camera.source_ip + ")" : camera.source_ip) : "Host route"]);
     main.innerHTML =
-      pageHead(camera.name, '<a class="btn" href="#/cameras/' + id + '">Edit</a>') +
-      '<section class="card"><div class="hero"><div class="hero-icon ' + state.kind + '">' + iconCamera + "</div><div>" +
+      '<header class="page-head"><div class="page-title"><a class="crumb" href="#/">Cameras</a><h1>' + esc(camera.name) + "</h1>" +
+      '<span class="pill ' + state.kind + '"><span class="dot ' + state.kind + '"></span>' + esc(state.label) + "</span></div>" +
+      '<div class="row"><button type="button" class="btn-ghost" id="refresh">Refresh</button><a class="btn" href="#/cameras/' + id + '">Edit camera</a></div></header>' +
+      '<section class="card status-hero"><span class="camera-icon lg ' + state.kind + '">' + iconCamera + "</span><div>" +
       '<p class="hero-title">' + esc(statusSentence(camera)) + "</p>" +
-      '<p class="hint">' + esc(statusDetail(camera)) + "</p></div></div>" +
-      '<p class="eyebrow">Networks</p>' + factList([
-        ["Listening", camera.source_ip ? (camera.source_interface ? camera.source_interface + " (" + camera.source_ip + ")" : camera.source_ip) : "Follow the host route"],
-        ["Broadcast", camera.virtual_ip ? camera.listen_ip : (camera.interface ? camera.interface + " (" + camera.listen_ip + ")" : camera.listen_ip)],
-      ].concat(camera.virtual_ip && camera.mac ? [["MAC", camera.mac + (camera.link ? " (own virtual adapter)" : " (shared with the host)")]] : [])) +
-      '<p class="eyebrow">ONVIF profile</p><h3>main</h3>' + factList(profileFacts(camera).concat(publishedFacts(camera).slice(0, 5), encoderFixed(camera))) +
+      '<p class="help">' + esc(statusDetail(camera)) + "</p></div></section>" +
       (runtime.error ? '<p class="banner error" role="alert">' + esc(runtime.error) + "</p>" : "") +
       (runtime.engine_error ? '<p class="banner error" role="alert">' + esc(runtime.engine_error) + "</p>" : "") +
-      copyList([["RTSP", runtime.rtsp_url], ["ONVIF", runtime.onvif_url]]) +
-      '<div class="form-actions"><button type="button" class="btn-quiet" id="refresh">Refresh</button></div></section>';
+      '<div class="status-grid">' +
+      '<section class="card"><h2>Connect a client</h2><p class="help">These addresses stay the same when the picture source changes.</p>' +
+      copyList([["ONVIF", runtime.onvif_url || urls.onvif], ["RTSP", runtime.rtsp_url || urls.rtsp]]) + "</section>" +
+      '<section class="card"><h2>Network</h2>' + factList(network) + "</section>" +
+      '<section class="card wide"><h2>Video output</h2>' + factList(publishedFacts(camera).slice(0, 5).concat([["ONVIF profiles", "main, sub (Profile S)"]])) +
+      '<details class="disclosure"><summary>Fixed encoder settings</summary>' + factList(encoderFixed(camera)) + "</details></section>" +
+      "</div>";
     document.getElementById("refresh").addEventListener("click", function () { showStatus(id); });
   }
 
