@@ -149,82 +149,73 @@
     return rows ? '<div class="copy-list">' + rows + "</div>" : "";
   }
 
-  function statusItem(kind, label, detail) {
-    return '<span class="status-item" title="' + esc(detail) + '"><span class="dot ' + kind + '"></span>' + esc(label) + "</span>";
-  }
-
-  async function refreshStatusBar() {
-    const bar = document.getElementById("status-bar");
-    if (!bar) return null;
-    try {
-      const status = await api("/api/status");
-      const ha = status.ha || {};
-      const discovery = status.discovery || { bindings: [] };
-      const engine = status.engine || {};
-      const ports = status.ports || {};
-      const bindings = discovery.bindings || [];
-      const failed = bindings.find(function (item) { return item.error && item.ip !== "127.0.0.1"; });
-      const answering = bindings.filter(function (item) { return !item.error; }).map(function (item) { return item.ip; });
-      const haKind = ha.connected ? "live" : ha.mode === "off" ? "still" : "bad";
-      const haLabel = ha.connected ? "Connected" : ha.mode === "off" ? "Not configured" : "Disconnected";
-      const haDetail = ha.error || (ha.mode === "supervisor" ? "Using the Supervisor token." : ha.url || "Add a Home Assistant URL and token to use camera entities.");
-      const discoveryDetail = failed
-        ? failed.ip + ": " + failed.error
-        : answering.length ? "Answering on " + answering.join(", ") + "." : "Add a camera on a real network to be discovered.";
-      const moved = ports.rtsp_requested && ports.rtsp !== ports.rtsp_requested;
-      const engineDetail = engine.error || ((engine.running ? "Publishing the active picture on the stable RTSP URL." : "ONVIF addresses are still advertised.") +
-        (moved ? " RTSP port " + ports.rtsp_requested + " is used by another program, so streams use " + ports.rtsp + "." : ""));
-      const rtspLabel = "RTSP " + (ports.rtsp || "—");
-      const rtspDetail = moved
-        ? "Port " + ports.rtsp_requested + " is used by another program, so streams use " + ports.rtsp + "."
-        : "Streams are published on port " + (ports.rtsp || "—") + ".";
-      const items = [
-        statusItem(haKind, "Home Assistant · " + haLabel, haDetail),
-        statusItem(discovery.ok ? "live" : "still", "Discovery · " + (discovery.ok ? "Ready" : "Check bindings"), discoveryDetail),
-        statusItem(engine.running ? "live" : engine.binary ? "bad" : "still", "Engine · " + (engine.running ? "Running" : engine.binary ? "Not responding" : "Binary not found"), engineDetail),
-        statusItem(moved ? "still" : "live", rtspLabel, rtspDetail),
-      ];
-      if (status.arp_isolation === "unavailable") {
-        items.push(statusItem("bad", "ARP shared", "This host would not let Stream Manager stop it answering for camera addresses, so UniFi Protect may see the host MAC and merge cameras."));
-      }
-      bar.innerHTML = items.join("");
-      return status;
-    } catch (err) {
-      bar.innerHTML = statusItem("bad", "Status unavailable", err.message);
-      return null;
-    }
-  }
-
   async function showOverview() {
     main.innerHTML = '<p class="loading">Loading overview…</p>';
     const status = await api("/api/status");
     const cameras = (await api("/api/cameras")).cameras;
     renderNav(cameras, { name: "overview" });
-    const arpBanner = status && status.arp_isolation === "unavailable"
+    const ha = status.ha;
+    const discovery = status.discovery || { bindings: [] };
+    const haKind = ha.connected ? "live" : ha.mode === "off" ? "still" : "bad";
+    const haLabel = ha.connected ? "Connected" : ha.mode === "off" ? "Not configured" : "Disconnected";
+    const haDetail = ha.error || (ha.mode === "supervisor" ? "Using the Supervisor token." : ha.url || "Add a Home Assistant URL and token to use camera entities.");
+    const discoveryKind = discovery.ok ? "live" : "still";
+    const discoveryLabel = discovery.ok ? "Ready" : "Check bindings";
+    const bindings = discovery.bindings || [];
+    const failed = bindings.find(function (item) { return item.error && item.ip !== "127.0.0.1"; });
+    const answering = bindings.filter(function (item) { return !item.error; }).map(function (item) { return item.ip; });
+    const discoveryDetail = failed
+      ? failed.ip + ": " + failed.error
+      : answering.length ? "Answering on " + answering.join(", ") + "." : "Add a camera on a real network to be discovered.";
+    const engine = status.engine || {};
+    const engineKind = engine.running ? "live" : engine.binary ? "bad" : "still";
+    const engineLabel = engine.running ? "Running" : engine.binary ? "Not responding" : "Binary not found";
+    const ports = status.ports || {};
+    const moved = ports.rtsp_requested && ports.rtsp !== ports.rtsp_requested
+      ? " RTSP port " + ports.rtsp_requested + " is used by another program, so streams use " + ports.rtsp + "."
+      : "";
+    const engineDetail = engine.error || ((engine.running ? "Publishing the active picture on the stable RTSP URL." : "ONVIF addresses are still advertised.") + moved);
+    const arp = status.arp_isolation || "";
+    const arpBanner = arp === "unavailable"
       ? '<p class="banner warn" role="status">This host would not let Stream Manager stop it answering for camera addresses, so UniFi Protect may see the host MAC and merge cameras. Stream Manager keeps announcing each camera MAC to work around it.</p>'
       : "";
-    const library = cameras.length
-      ? '<div class="library"><div class="library-head"><span>Name</span><span>Source</span><span>Address</span><span>Video</span><span></span></div>' +
-        cameras.map(function (camera) {
+
+    function tile(title, kind, label, detail) {
+      return '<section class="health ' + kind + '"><span class="dot ' + kind + '"></span><div class="health-copy"><span class="health-title">' + esc(title) +
+        '</span><strong>' + esc(label) + '</strong><span class="help">' + esc(detail) + "</span></div></section>";
+    }
+
+    const cards = cameras.length
+      ? '<div class="camera-grid">' + cameras.map(function (camera) {
           const state = cameraState(camera);
           const runtime = camera.runtime || {};
+          const urls = camera.urls || {};
           const output = outputOf(camera);
-          const statusHref = "#/cameras/" + camera.id + "/status";
-          return '<div class="library-line">' +
-            '<a class="library-name" href="' + statusHref + '"><span class="dot ' + state.kind + '" title="' + esc(state.label) + '"></span><span>' + esc(camera.name) + "</span></a>" +
-            '<a class="library-source" href="' + statusHref + '">' + esc(runtime.source_name || "No active source") + "</a>" +
-            '<a class="library-address mono" href="' + statusHref + '">' + esc(camera.listen_ip) + "</a>" +
-            '<a class="library-video" href="' + statusHref + '">' + output.height + "p · " + output.framerate + " fps</a>" +
-            '<a class="row-edit" href="#/cameras/' + camera.id + '">Edit</a></div>';
+          const address = camera.listen_ip;
+          return '<article class="card camera-card"><div class="camera-top">' +
+            '<span class="camera-icon ' + state.kind + '">' + iconCamera + "</span>" +
+            '<div class="camera-copy"><h2><a href="#/cameras/' + camera.id + '/status">' + esc(camera.name) + "</a></h2>" +
+            '<p class="help">' + esc(runtime.source_name || "No active source") + "</p></div>" +
+            '<span class="pill ' + state.kind + '"><span class="dot ' + state.kind + '"></span>' + esc(state.label) + "</span></div>" +
+            '<dl class="specs"><div><dt>Address</dt><dd class="mono">' + esc(address) + "</dd></div>" +
+            '<div><dt>Video</dt><dd>' + output.height + "p · " + output.framerate + " fps</dd></div>" +
+            (camera.mac ? '<div><dt>MAC</dt><dd class="mono">' + esc(camera.mac) + "</dd></div>" : "") + "</dl>" +
+            copyList([["ONVIF", urls.onvif], ["RTSP", urls.rtsp]]) +
+            '<div class="row card-actions"><a class="btn-secondary" href="#/cameras/' + camera.id + '">Edit</a>' +
+            '<a class="btn-ghost" href="#/cameras/' + camera.id + '/status">Live status</a></div></article>';
         }).join("") + "</div>"
-      : '<div class="panel empty"><h2>Publish your first camera</h2>' +
-        '<p class="help">Pick a Home Assistant camera, RTSP stream, ONVIF device, still image, or video. Stream Manager gives it its own address so UniFi Protect and other ONVIF clients can adopt it.</p>' +
+      : '<div class="card empty"><span class="camera-icon live">' + iconCamera + '</span><h2>Publish your first camera</h2>' +
+        '<p class="help">Pick a Home Assistant camera, RTSP stream, ONVIF device or still image. Stream Manager gives it its own address so UniFi Protect and other ONVIF clients can adopt it.</p>' +
         '<a class="btn" href="#/cameras/new">' + iconPlus + "Add camera</a></div>";
 
     main.innerHTML = '<header class="page-head"><div class="page-title"><h1>Cameras</h1>' +
       (cameras.length ? '<span class="count">' + cameras.length + "</span>" : "") + "</div>" +
       (cameras.length ? '<a class="btn" href="#/cameras/new">' + iconPlus + "Add camera</a>" : "") + "</header>" +
-      arpBanner + library;
+      '<div class="health-strip">' +
+      tile("Home Assistant", haKind, haLabel, haDetail) +
+      tile("Discovery", discoveryKind, discoveryLabel, discoveryDetail) +
+      tile("Stream engine", engineKind, engineLabel, engineDetail) +
+      "</div>" + arpBanner + cards;
   }
 
   const resolutions = [[1920, 1080], [1280, 720], [640, 480], [640, 360]];
@@ -511,29 +502,14 @@
       '<button type="button" class="tool danger" data-act="remove-rule" data-i="' + index + '" aria-label="Remove rule">' + iconTrash + "</button></div></div>";
   }
 
-  const editorModules = [
-    ["sec-basics", "Camera"],
-    ["sec-sources", "Sources"],
-    ["sec-network", "Network"],
-    ["sec-video", "Video"],
-    ["sec-automation", "Switching"],
-  ];
-
-  function formSection(id, title, lead, body) {
-    return '<section class="panel module-panel" id="' + id + '" aria-labelledby="' + id + '-title">' +
-      '<header class="section-head"><div><h2 id="' + id + '-title">' + esc(title) +
-      '</h2><p class="lead">' + esc(lead) + "</p></div></header>" +
+  function formSection(step, id, title, lead, body) {
+    return '<section class="card section" id="' + id + '" aria-labelledby="' + id + '-title">' +
+      '<header class="section-head"><span class="step" aria-hidden="true">' + step + "</span><div>" +
+      '<h2 id="' + id + '-title">' + esc(title) + '</h2><p class="lead">' + esc(lead) + "</p></div></header>" +
       '<div class="section-body">' + body + "</div></section>";
   }
 
-  function moduleNav(active) {
-    return '<nav class="modules" aria-label="Sections">' + editorModules.map(function (item) {
-      return '<button type="button" class="module-btn" data-module="' + item[0] + '"' +
-        (item[0] === active ? ' aria-current="true"' : "") + ">" + esc(item[1]) + "</button>";
-    }).join("") + "</nav>";
-  }
-
-  function inspectorBody(camera, id) {
+  function summaryPanel(camera, id) {
     const urls = camera.urls || {};
     const address = camera.virtual_ip && camera.listen_ip ? camera.listen_ip : "";
     const rows = [];
@@ -545,15 +521,20 @@
       [false, "Turn on discovery in Protect", "Settings › System › Discover Third-Party Cameras."],
       [false, "Click to Adopt", login],
     ];
-    return '<section class="inspector-block"><p class="eyebrow">Published as</p>' +
+    const toc = [["sec-basics", "Camera"], ["sec-sources", "Picture sources"], ["sec-network", "Network"], ["sec-video", "Video output"], ["sec-automation", "Automatic switching"]];
+    return '<aside class="summary" aria-label="Camera summary">' +
+      '<section class="card summary-card"><p class="eyebrow">Published as</p>' +
       '<p class="summary-address">' + esc(address || (id ? camera.listen_ip : "Assigned on save")) + "</p>" +
       (camera.virtual_ip && camera.mac ? '<p class="help mono">MAC ' + esc(camera.mac) + (camera.link ? "" : " · shared with host") + "</p>" : "") +
       (rows.length ? copyList(rows) : "") + "</section>" +
-      '<section class="inspector-block"><p class="eyebrow">Add to UniFi Protect</p><ol class="checklist">' +
+      '<section class="card summary-card"><p class="eyebrow">Add to UniFi Protect</p><ol class="checklist">' +
       steps.map(function (step) {
         return '<li class="' + (step[0] ? "done" : "") + '"><span class="tick" aria-hidden="true">' + (step[0] ? iconCheck : "") + "</span><div><strong>" +
           esc(step[1]) + "</strong><span>" + esc(step[2]) + "</span></div></li>";
-      }).join("") + "</ol></section>";
+      }).join("") + "</ol></section>" +
+      '<nav class="toc" aria-label="Sections">' + toc.map(function (item) {
+        return '<a href="#' + item[0] + '" data-scroll="' + item[0] + '">' + esc(item[1]) + "</a>";
+      }).join("") + "</nav></aside>";
   }
 
   function assignedNote(loopback, address) {
@@ -575,18 +556,6 @@
     const cameras = (await api("/api/cameras")).cameras;
     const camera = id ? await api("/api/cameras/" + id) : blankCamera();
     renderNav(cameras, { name: "edit", id: id });
-    let activeModule = "sec-basics";
-
-    function showModule(moduleId) {
-      activeModule = moduleId;
-      document.querySelectorAll(".module-panel").forEach(function (panel) {
-        panel.hidden = panel.id !== moduleId;
-      });
-      document.querySelectorAll("[data-module]").forEach(function (button) {
-        if (button.getAttribute("data-module") === moduleId) button.setAttribute("aria-current", "true");
-        else button.removeAttribute("aria-current");
-      });
-    }
 
     function paint() {
       const known = interfaces.slice();
@@ -633,15 +602,15 @@
         (id ? '<div class="row"><a class="btn-secondary" href="#/cameras/' + id + '/status">Live status</a></div>' : "") +
         "</header>";
 
-      const basics = formSection("sec-basics", "Camera", "The name UniFi Protect and other ONVIF clients show for this device.",
+      const basics = formSection("1", "sec-basics", "Camera", "The name UniFi Protect and other ONVIF clients show for this device.",
         '<div class="fields"><label class="field">Name<input name="name" required maxlength="64" value="' + esc(camera.name) + '" placeholder="Front printer"></label>' +
         '<label class="switch"><input type="checkbox" name="enabled"' + (camera.enabled ? " checked" : "") + '><span>Publish this camera</span></label></div>');
 
-      const sources = formSection("sec-sources", "Picture sources", "Where the video comes from. The first source is used unless automation picks another.",
+      const sources = formSection("2", "sec-sources", "Picture sources", "Where the video comes from. The first source is used unless automation picks another.",
         '<div class="stack">' + camera.sources.map(sourceBlock).join("") + "</div>" +
         '<button type="button" class="btn-ghost add" id="add-source">' + iconPlus + "Add source</button>");
 
-      const network = formSection("sec-network", "Publish on your network", "The camera gets its own address on this network, so it shows up as a separate device.",
+      const network = formSection("3", "sec-network", "Publish on your network", "The camera gets its own address on this network, so it shows up as a separate device.",
         '<div class="fields">' +
         '<label class="field">Network<select name="iface">' + ifaceOptions + "</select></label>" +
         '<input type="hidden" name="listen_ip" value="' + esc(broadcastValue) + '">' +
@@ -659,10 +628,10 @@
         '<div class="fields"><label class="field">Fetch sources from<select name="source_iface">' + sourceOptions + "</select></label>" +
         '<p class="help">Only needed when the source camera sits on another network than the one above. Home Assistant camera entities are always fetched through Home Assistant.</p></div></details>');
 
-      const video = formSection("sec-video", "Video output", "What ONVIF clients receive. Protect works best with H.264 Main, 2 second keyframes and 2,000–4,000 kbps.",
+      const video = formSection("4", "sec-video", "Video output", "What ONVIF clients receive. Protect works best with H.264 Main, 2 second keyframes and 2,000–4,000 kbps.",
         outputFields(camera));
 
-      const automation = formSection("sec-automation", "Automatic switching", "Rotate the sources on a timer, or switch when a Home Assistant entity changes.",
+      const automation = formSection("5", "sec-automation", "Automatic switching", "Rotate the sources on a timer, or switch when a Home Assistant entity changes.",
         '<label class="switch"><input type="checkbox" name="cycle_enabled"' + (camera.cycle_enabled ? " checked" : "") + '><span>Cycle through the sources in order</span></label>' +
         '<div class="fields inset"><label class="field">Show each source for<span class="suffix-field"><input name="cycle_seconds" type="number" min="5" max="3600" required value="' + esc(camera.cycle_seconds || 30) + '"><span class="suffix">sec</span></span></label></div>' +
         '<p class="help">The picture changes at the next keyframe, so the switch stays short. A matching rule below still takes over.</p>' +
@@ -673,22 +642,20 @@
         "</div>" +
         '<button type="button" class="btn-ghost add" id="add-rule">' + iconPlus + "Add rule</button>");
 
-      main.innerHTML =
-        '<form id="camera-form" class="workspace-frame">' +
-        moduleNav(activeModule) +
-        '<div class="canvas">' + head +
+      main.innerHTML = head +
         (entityPayload.connected ? "" : '<div class="banner info">Home Assistant entities are unavailable. RTSP, ONVIF and image sources still work. ' + esc(entityPayload.error || "") + "</div>") +
+        '<div class="editor">' +
+        '<form id="camera-form" class="stack">' +
         '<datalist id="camera-entities">' + cameraList + "</datalist>" +
         '<datalist id="all-entities">' + allList + "</datalist>" +
         basics + sources + network + video + automation +
-        "</div>" +
-        '<aside class="inspector" aria-label="Properties">' +
-        inspectorBody(camera, id) +
-        '<div class="inspector-actions"><p id="form-error" class="banner error" role="alert" hidden></p>' +
-        '<button class="btn" type="submit">' + (id ? "Save changes" : "Create camera") + "</button>" +
-        '<div class="row"><a class="btn-ghost" href="' + (id ? "#/cameras/" + id + "/status" : "#/") + '">Cancel</a>' +
-        (id ? '<button type="button" class="btn-ghost danger push" id="delete-camera">Delete</button>' : "") +
-        "</div></div></aside></form>";
+        '<div class="savebar"><p id="form-error" class="banner error" role="alert" hidden></p>' +
+        '<div class="row"><button class="btn" type="submit">' + (id ? "Save changes" : "Create camera") + "</button>" +
+        '<a class="btn-ghost" href="' + (id ? "#/cameras/" + id + "/status" : "#/") + '">Cancel</a>' +
+        (id ? '<button type="button" class="btn-ghost danger push" id="delete-camera">Delete camera</button>' : "") +
+        "</div></div></form>" +
+        summaryPanel(camera, id) +
+        "</div>";
 
       const form = document.getElementById("camera-form");
       const assignedInterface = camera.virtual_ip ? camera.interface : "";
@@ -733,12 +700,6 @@
         paint();
       });
       form.addEventListener("click", function (event) {
-        const moduleBtn = event.target.closest("[data-module]");
-        if (moduleBtn) {
-          event.preventDefault();
-          showModule(moduleBtn.getAttribute("data-module"));
-          return;
-        }
         const button = event.target.closest("button");
         if (!button) return;
         const act = button.getAttribute("data-act");
@@ -773,15 +734,6 @@
       });
       form.addEventListener("submit", async function (event) {
         event.preventDefault();
-        document.querySelectorAll(".module-panel").forEach(function (panel) { panel.hidden = false; });
-        const invalid = form.querySelector(":invalid");
-        if (invalid) {
-          const panel = invalid.closest(".module-panel");
-          showModule(panel ? panel.id : activeModule);
-          invalid.reportValidity();
-          return;
-        }
-        showModule(activeModule);
         const error = document.getElementById("form-error");
         error.hidden = true;
         readForm(form, camera);
@@ -818,7 +770,6 @@
         });
       }
       enhanceSelects(form);
-      showModule(activeModule);
     }
 
     paint();
@@ -866,30 +817,26 @@
     if (camera.virtual_ip && camera.mac) network.push(["MAC", camera.mac + (camera.link ? " · own virtual adapter" : " · shared with host")]);
     network.push(["Sources fetched from", camera.source_ip ? (camera.source_interface ? camera.source_interface + " (" + camera.source_ip + ")" : camera.source_ip) : "Host route"]);
     main.innerHTML =
-      '<div class="workspace-frame two">' +
-      '<div class="canvas">' +
       '<header class="page-head"><div class="page-title"><a class="crumb" href="#/">Cameras</a><h1>' + esc(camera.name) + "</h1>" +
-      '<span class="pill ' + state.kind + '"><span class="dot ' + state.kind + '"></span>' + esc(state.label) + "</span></div></header>" +
-      '<section class="panel status-hero"><span class="dot ' + state.kind + '"></span><div>' +
+      '<span class="pill ' + state.kind + '"><span class="dot ' + state.kind + '"></span>' + esc(state.label) + "</span></div>" +
+      '<div class="row"><button type="button" class="btn-ghost" id="refresh">Refresh</button><a class="btn" href="#/cameras/' + id + '">Edit camera</a></div></header>' +
+      '<section class="card status-hero"><span class="camera-icon lg ' + state.kind + '">' + iconCamera + "</span><div>" +
       '<p class="hero-title">' + esc(statusSentence(camera)) + "</p>" +
       '<p class="help">' + esc(statusDetail(camera)) + "</p></div></section>" +
       (runtime.error ? '<p class="banner error" role="alert">' + esc(runtime.error) + "</p>" : "") +
       (runtime.engine_error ? '<p class="banner error" role="alert">' + esc(runtime.engine_error) + "</p>" : "") +
-      '<section class="panel"><h2>Video output</h2>' + factList(publishedFacts(camera).slice(0, 5).concat([["ONVIF profiles", "main, sub (Profile S)"]])) +
+      '<div class="status-grid">' +
+      '<section class="card"><h2>Connect a client</h2><p class="help">These addresses stay the same when the picture source changes.</p>' +
+      copyList([["ONVIF", runtime.onvif_url || urls.onvif], ["RTSP", runtime.rtsp_url || urls.rtsp]]) + "</section>" +
+      '<section class="card"><h2>Network</h2>' + factList(network) + "</section>" +
+      '<section class="card wide"><h2>Video output</h2>' + factList(publishedFacts(camera).slice(0, 5).concat([["ONVIF profiles", "main, sub (Profile S)"]])) +
       '<details class="disclosure"><summary>Fixed encoder settings</summary>' + factList(encoderFixed(camera)) + "</details></section>" +
-      '<section class="panel" aria-labelledby="check-title"><div class="card-head"><div><h2 id="check-title">Stream check</h2>' +
+      '<section class="card wide" aria-labelledby="check-title"><div class="card-head"><div><h2 id="check-title">Stream check</h2>' +
       '<p class="help">Opens the ONVIF stream UniFi Protect plays, then opens the camera\'s RTSP or RTSPS source, and reads video frames from both.</p></div>' +
       '<button type="button" class="btn-secondary" id="check-stream">Test stream</button></div>' +
       '<div id="probe-results"><p class="help">Not tested yet.</p></div>' +
       '<div id="stream-facts"></div></section>' +
-      "</div>" +
-      '<aside class="inspector" aria-label="Properties">' +
-      '<section class="inspector-block"><p class="eyebrow">Connect a client</p>' +
-      '<p class="help">These addresses stay the same when the picture source changes.</p>' +
-      copyList([["ONVIF", runtime.onvif_url || urls.onvif], ["RTSP", runtime.rtsp_url || urls.rtsp]]) + "</section>" +
-      '<section class="inspector-block"><p class="eyebrow">Network</p>' + factList(network) + "</section>" +
-      '<div class="inspector-actions"><a class="btn" href="#/cameras/' + id + '">Edit camera</a>' +
-      '<button type="button" class="btn-ghost" id="refresh">Refresh</button></div></aside></div>';
+      "</div>";
     document.getElementById("refresh").addEventListener("click", function () { showStatus(id); });
     document.getElementById("check-stream").addEventListener("click", function () { checkStream(camera); });
     loadStreamFacts(camera);
@@ -967,7 +914,6 @@
 
   async function render() {
     const current = route();
-    refreshStatusBar();
     try {
       if (current.name === "edit") await showEditor(current.id);
       else if (current.name === "status") await showStatus(current.id);
