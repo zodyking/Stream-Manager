@@ -178,6 +178,24 @@ class OnvifSoapTests(unittest.TestCase):
         self.assertIn(ENDPOINTS.stream, authed.body)
         pre = dispatch(envelope("<tds:GetSystemDateAndTime/>"), cam, ENDPOINTS, method="POST", authorization="", nonce="n1")
         self.assertEqual(pre.status, 200)
+        stale = body.replace("<trt:GetStreamUri/>", "<trt:GetSystemDateAndTime/>")
+        stale = stale.replace(digest, password_digest(b"nonce-bytes", created, "old"))
+        self.assertEqual(dispatch(stale, cam, ENDPOINTS, method="POST", authorization="", nonce="n1").status, 200)
+
+    def test_protect_sees_two_profiles_and_the_camera_mac(self):
+        cam = camera()
+        cam.mac = "02:11:22:33:44:55"
+        profiles_xml = build_operation("GetProfiles", cam, ENDPOINTS, envelope("<trt:GetProfiles/>"))
+        self.assertIn('token="main"', profiles_xml)
+        self.assertIn('token="sub"', profiles_xml)
+        sub = build_operation("GetProfile", cam, ENDPOINTS, envelope("<trt:GetProfile><trt:ProfileToken>sub</trt:ProfileToken></trt:GetProfile>"))
+        self.assertIn('<trt:Profile token="sub"', sub)
+        nic = build_operation("GetNetworkInterfaces", cam, ENDPOINTS, "")
+        self.assertIn("<tt:HwAddress>02:11:22:33:44:55</tt:HwAddress>", nic)
+        info = build_operation("GetDeviceInformation", cam, ENDPOINTS, "")
+        self.assertIn("<tds:HardwareId>021122334455</tds:HardwareId>", info)
+        clock = build_operation("GetSystemDateAndTime", cam, ENDPOINTS, "")
+        self.assertIn("<tt:LocalDateTime>", clock)
 
 
 if __name__ == "__main__":

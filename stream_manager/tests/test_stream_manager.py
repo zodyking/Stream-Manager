@@ -152,26 +152,56 @@ def engine_templates() -> dict[str, str]:
     return ffmpeg_templates()
 
 
+class FakeSock:
+    def __init__(self) -> None:
+        self.sent: list[tuple[bytes, tuple]] = []
+
+    def sendto(self, packet, addr):
+        self.sent.append((packet, addr))
+
+
+def _ad(ip: str, name: str) -> dict:
+    return {
+        "ip": ip,
+        "endpoint_uuid": name,
+        "scopes": scope_list(name),
+        "xaddr": f"http://{ip}/onvif/device_service",
+    }
+
+
 class DiscoveryTests(unittest.TestCase):
-    def test_probe_reply_uses_a_side_map(self):
-        sent = []
+    def test_each_camera_answers_from_its_own_address(self):
+        service = DiscoveryService()
+        gate, door = FakeSock(), FakeSock()
+        service._targets = [_ad("192.0.2.40", "Gate"), _ad("192.0.2.41", "Door")]
+        service._senders = {"192.0.2.40": gate, "192.0.2.41": door}
+        probe = b"<s:Header><a:MessageID>uuid:p1</a:MessageID></s:Header><d:Probe><d:Types>tds:Device</d:Types></d:Probe>"
+        service._reply(probe, ("192.0.2.2", 3702))
+        self.assertEqual(len(gate.sent), 1)
+        self.assertIn(b"http://192.0.2.40/onvif/device_service", gate.sent[0][0])
+        self.assertIn(b"http://192.0.2.41/onvif/device_service", door.sent[0][0])
+        self.assertEqual(gate.sent[0][1], ("192.0.2.2", 3702))
 
-        class FakeSock:
-            def sendto(self, packet, addr):
-                sent.append(packet)
-
+    def test_duplicate_probe_on_two_interfaces_is_answered_once(self):
         service = DiscoveryService()
         sock = FakeSock()
-        service._by_sock[id(sock)] = [
-            {
-                "endpoint_uuid": "abc",
-                "scopes": scope_list("Gate"),
-                "xaddr": "http://192.0.2.26:8080/onvif/gate/device_service",
-            }
-        ]
-        service._reply(sock, b"<d:Probe></d:Probe>", ("192.0.2.2", 3702))
-        self.assertTrue(sent)
-        self.assertIn(b"192.0.2.26", sent[0])
+        service._targets = [_ad("192.0.2.40", "Gate")]
+        service._senders = {"192.0.2.40": sock}
+        probe = b"<a:MessageID>uuid:p2</a:MessageID><d:Probe></d:Probe>"
+        service._reply(probe, ("192.0.2.2", 3702))
+        service._reply(probe, ("192.0.2.2", 3702))
+        self.assertEqual(len(sock.sent), 1)
+
+    def test_hello_goes_to_the_multicast_group(self):
+        service = DiscoveryService()
+        sock = FakeSock()
+        service._targets = [_ad("192.0.2.40", "Gate")]
+        service._senders = {"192.0.2.40": sock}
+        service._announce("Hello")
+        packet, addr = sock.sent[0]
+        self.assertEqual(addr, ("239.255.255.250", 3702))
+        self.assertIn(b"discovery/Hello", packet)
+        self.assertIn(b"dn:NetworkVideoTransmitter", packet)
 
 
 if __name__ == "__main__":

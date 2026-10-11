@@ -1,13 +1,17 @@
-"""WS-Discovery ProbeMatch builders and a best-effort multicast listener."""
+﻿"""WS-Discovery messages and the multicast listener that answers ONVIF probes."""
 
 from __future__ import annotations
 
+import errno
+import itertools
 import logging
 import re
 import select
 import socket
 import threading
+import time
 import uuid
+from collections import deque
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
@@ -22,6 +26,7 @@ def scope_list(name: str) -> list[str]:
         "onvif://www.onvif.org/Profile/S",
         "onvif://www.onvif.org/type/video_encoder",
         "onvif://www.onvif.org/type/NetworkVideoTransmitter",
+        "onvif://www.onvif.org/hardware/VirtualCamera",
         "onvif://www.onvif.org/name/" + quote(name, safe=""),
         "onvif://www.onvif.org/location/virtual",
     ]
@@ -36,7 +41,7 @@ def probe_relevant(payload: str) -> bool:
     text = types.group(1).strip()
     if not text:
         return True
-    return "NetworkVideoTransmitter" in text
+    return "NetworkVideoTransmitter" in text or re.search(r"(?:^|[\s:])Device(?:\s|$)", text) is not None
 
 
 def scopes_match(payload: str, scopes: list[str]) -> bool:
@@ -56,152 +61,236 @@ def message_id(payload: str) -> str:
     return "uuid:" + str(uuid.uuid4())
 
 
-def build_probe_match(relates_to: str, endpoint_uuid: str, scopes: list[str], xaddr: str) -> bytes:
-    safe_scopes = escape(" ".join(scopes))
-    safe_xaddr = escape(xaddr)
-    safe_relates = escape(relates_to)
+_NAMESPACES = (
+    'xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
+    'xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" '
+    'xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" '
+    'xmlns:dn="http://www.onvif.org/ver10/network/wsdl" '
+    'xmlns:tds="http://www.onvif.org/ver10/device/wsdl"'
+)
+_TYPES = "dn:NetworkVideoTransmitter tds:Device"
+_INSTANCE = str(int(time.time()))
+
+
+def _endpoint(endpoint_uuid: str, scopes: list[str], xaddr: str) -> str:
+    return (
+        f"<wsa:EndpointReference><wsa:Address>urn:uuid:{escape(endpoint_uuid)}</wsa:Address></wsa:EndpointReference>"
+        f"<d:Types>{_TYPES}</d:Types>"
+        f"<d:Scopes>{escape(' '.join(scopes))}</d:Scopes>"
+        f"<d:XAddrs>{escape(xaddr)}</d:XAddrs>"
+        "<d:MetadataVersion>1</d:MetadataVersion>"
+    )
+
+
+def build_probe_match(relates_to: str, endpoint_uuid: str, scopes: list[str], xaddr: str, number: int = 1) -> bytes:
     body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:dn="http://www.onvif.org/ver10/network/wsdl">
+<soap:Envelope {_NAMESPACES}>
   <soap:Header>
     <wsa:MessageID>uuid:{uuid.uuid4()}</wsa:MessageID>
-    <wsa:RelatesTo>{safe_relates}</wsa:RelatesTo>
+    <wsa:RelatesTo>{escape(relates_to)}</wsa:RelatesTo>
     <wsa:To>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:To>
     <wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches</wsa:Action>
-    <d:AppSequence InstanceId="1" MessageNumber="1"/>
+    <d:AppSequence InstanceId="{_INSTANCE}" MessageNumber="{number}"/>
   </soap:Header>
   <soap:Body>
-    <d:ProbeMatches>
-      <d:ProbeMatch>
-        <wsa:EndpointReference><wsa:Address>urn:uuid:{escape(endpoint_uuid)}</wsa:Address></wsa:EndpointReference>
-        <d:Types>dn:NetworkVideoTransmitter</d:Types>
-        <d:Scopes>{safe_scopes}</d:Scopes>
-        <d:XAddrs>{safe_xaddr}</d:XAddrs>
-        <d:MetadataVersion>1</d:MetadataVersion>
-      </d:ProbeMatch>
-    </d:ProbeMatches>
+    <d:ProbeMatches><d:ProbeMatch>{_endpoint(endpoint_uuid, scopes, xaddr)}</d:ProbeMatch></d:ProbeMatches>
   </soap:Body>
 </soap:Envelope>"""
     return body.encode("utf-8")
 
 
+def build_announcement(kind: str, endpoint_uuid: str, scopes: list[str], xaddr: str, number: int = 1) -> bytes:
+    """Hello when a camera appears and Bye when it leaves."""
+    if kind == "Hello":
+        inner = _endpoint(endpoint_uuid, scopes, xaddr)
+    else:
+        inner = f"<wsa:EndpointReference><wsa:Address>urn:uuid:{escape(endpoint_uuid)}</wsa:Address></wsa:EndpointReference>"
+    body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope {_NAMESPACES}>
+  <soap:Header>
+    <wsa:MessageID>uuid:{uuid.uuid4()}</wsa:MessageID>
+    <wsa:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To>
+    <wsa:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/{kind}</wsa:Action>
+    <d:AppSequence InstanceId="{_INSTANCE}" MessageNumber="{number}"/>
+  </soap:Header>
+  <soap:Body><d:{kind}>{inner}</d:{kind}></soap:Body>
+</soap:Envelope>"""
+    return body.encode("utf-8")
+
+
+def _discoverable(ad: dict) -> bool:
+    ip = str(ad.get("ip") or "")
+    return ad.get("discovery_mode") != "NonDiscoverable" and bool(ip) and not ip.startswith("127.") and ip != "0.0.0.0"
+
+
 class DiscoveryService:
+    """One wildcard socket hears every probe; each camera answers from its own address.
+
+    A socket bound to a unicast address never sees multicast on Linux, so the
+    listener binds 0.0.0.0:3702 and joins the group once per camera address.
+    """
+
     def __init__(self) -> None:
         self.status: dict = {"ok": True, "bindings": [], "note": "no cameras"}
         self._ads: list[dict] = []
+        self._targets: list[dict] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._sockets: list[socket.socket] = []
-        self._by_sock: dict[int, list[dict]] = {}
+        self._listener: socket.socket | None = None
+        self._senders: dict[str, socket.socket] = {}
+        self._seen: deque[str] = deque(maxlen=64)
+        self._numbers = itertools.count(1)
 
     def update(self, advertisements: list[dict]) -> None:
-        if advertisements == self._ads and (self._thread or not any(ad.get("ip") and not str(ad.get("ip")).startswith("127.") for ad in advertisements)):
+        running = self._thread is not None or not any(_discoverable(ad) for ad in advertisements)
+        if advertisements == self._ads and running:
             return
         self._ads = list(advertisements)
         self.restart()
 
     def restart(self) -> None:
-        self.stop()
+        targets = [ad for ad in self._ads if _discoverable(ad)]
+        kept = {ad["endpoint_uuid"] for ad in targets}
+        self._announce("Bye", [ad for ad in self._targets if ad["endpoint_uuid"] not in kept])
+        self.stop(announce=False)
         self._stop = threading.Event()
-        bindings, sockets, by_sock = self._bind_all()
-        self._sockets = sockets
-        self._by_sock = by_sock
-        failures = [item for item in bindings if item.get("error") and not str(item.get("ip", "")).startswith("127.")]
+        self._targets = targets
+        bindings: list[dict] = []
+        loopback = sum(1 for ad in self._ads if str(ad.get("ip", "")).startswith("127."))
+        if loopback:
+            bindings.append({"ip": "127.0.0.1", "cameras": loopback, "error": "loopback is not announced with WS-Discovery"})
+        if not self._targets:
+            self.status = {"ok": True, "bindings": bindings, "note": "no discoverable cameras"}
+            return
+        try:
+            self._listener = self._open_listener()
+        except OSError as exc:
+            log.warning("WS-Discovery cannot listen on UDP 3702: %s", exc)
+            for ip in sorted({ad["ip"] for ad in self._targets}):
+                bindings.append({"ip": ip, "cameras": self._count(ip), "error": f"UDP 3702: {exc}"})
+            self.status = {"ok": False, "bindings": bindings, "note": "discovery listener failed"}
+            return
+        for ip in sorted({ad["ip"] for ad in self._targets}):
+            error = self._join(ip)
+            if error is None:
+                try:
+                    self._senders[ip] = self._open_sender(ip)
+                except OSError as exc:
+                    error = str(exc)
+            if error:
+                log.warning("WS-Discovery on %s: %s", ip, error)
+            bindings.append({"ip": ip, "cameras": self._count(ip), "error": error})
         self.status = {
-            "ok": not failures,
+            "ok": not any(item["error"] for item in bindings if item["ip"] != "127.0.0.1"),
             "bindings": bindings,
-            "note": "" if bindings else "no discoverable cameras",
+            "note": "",
         }
-        if sockets:
-            self._thread = threading.Thread(target=self._loop, name="ws-discovery", daemon=True)
-            self._thread.start()
+        self._thread = threading.Thread(target=self._loop, name="ws-discovery", daemon=True)
+        self._thread.start()
+        self._announce("Hello")
 
-    def stop(self) -> None:
+    def stop(self, announce: bool = True) -> None:
+        if announce:
+            self._announce("Bye")
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.5)
-        for sock in self._sockets:
+        for sock in [self._listener, *self._senders.values()]:
+            if sock is None:
+                continue
             try:
                 sock.close()
             except OSError:
                 pass
-        self._sockets = []
-        self._by_sock = {}
+        self._listener = None
+        self._senders = {}
         self._thread = None
 
-    def _bind_all(self) -> tuple[list[dict], list[socket.socket], dict[int, list[dict]]]:
-        groups: dict[str, list[dict]] = {}
-        for ad in self._ads:
-            if ad.get("discovery_mode") == "NonDiscoverable":
-                continue
-            ip = ad.get("ip") or ""
-            if not ip or ip.startswith("127."):
-                continue
-            groups.setdefault(ip, []).append(ad)
-        bindings: list[dict] = []
-        sockets: list[socket.socket] = []
-        by_sock: dict[int, list[dict]] = {}
-        for ip, ads in groups.items():
-            try:
-                sock = self._open(ip)
-            except OSError as exc:
-                log.warning("discovery bind %s failed: %s", ip, exc)
-                bindings.append({"ip": ip, "cameras": len(ads), "error": str(exc)})
-                continue
-            by_sock[id(sock)] = ads
-            sockets.append(sock)
-            bindings.append({"ip": ip, "cameras": len(ads), "error": None})
-        if any(ad.get("ip", "").startswith("127.") for ad in self._ads):
-            bindings.append(
-                {
-                    "ip": "127.0.0.1",
-                    "cameras": sum(1 for ad in self._ads if str(ad.get("ip", "")).startswith("127.")),
-                    "error": "loopback is not announced with WS-Discovery",
-                }
-            )
-        return bindings, sockets, by_sock
+    def _count(self, ip: str) -> int:
+        return sum(1 for ad in self._targets if ad["ip"] == ip)
 
-    def _open(self, ip: str) -> socket.socket:
+    def _open_listener(self) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((ip, 3702))
-            group = socket.inet_aton("239.255.255.250")
-            iface = socket.inet_aton(ip)
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, group + iface)
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, iface)
+            if hasattr(socket, "SO_REUSEPORT"):
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                except OSError:
+                    pass
+            sock.bind(("", MULTICAST[1]))
             sock.setblocking(False)
         except OSError:
             sock.close()
             raise
         return sock
 
+    def _join(self, ip: str) -> str | None:
+        assert self._listener is not None
+        request = socket.inet_aton(MULTICAST[0]) + socket.inet_aton(ip)
+        try:
+            self._listener.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, request)
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return None
+            return f"join multicast: {exc}"
+        return None
+
+    def _open_sender(self, ip: str) -> socket.socket:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        try:
+            sock.bind((ip, 0))
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        except OSError:
+            sock.close()
+            raise
+        return sock
+
+    def _announce(self, kind: str, ads: list[dict] | None = None) -> None:
+        for ad in self._targets if ads is None else ads:
+            sock = self._senders.get(ad["ip"])
+            if sock is None:
+                continue
+            packet = build_announcement(kind, ad["endpoint_uuid"], ad["scopes"], ad["xaddr"], next(self._numbers))
+            try:
+                sock.sendto(packet, MULTICAST)
+            except OSError as exc:
+                log.debug("%s from %s failed: %s", kind, ad["ip"], exc)
+
     def _loop(self) -> None:
         while not self._stop.is_set():
-            sockets = list(self._sockets)
-            if not sockets:
+            listener = self._listener
+            if listener is None:
                 return
             try:
-                readable, _, _ = select.select(sockets, [], [], 0.4)
+                readable, _, _ = select.select([listener], [], [], 0.4)
             except (OSError, ValueError):
                 return
-            for sock in readable:
-                try:
-                    data, addr = sock.recvfrom(65535)
-                except OSError:
-                    continue
-                self._reply(sock, data, addr)
+            if not readable:
+                continue
+            try:
+                data, addr = listener.recvfrom(65535)
+            except OSError:
+                continue
+            self._reply(data, addr)
 
-    def _reply(self, sock: socket.socket, data: bytes, addr: tuple) -> None:
+    def _reply(self, data: bytes, addr: tuple) -> None:
         text = data.decode("utf-8", "replace")
         if not probe_relevant(text):
             return
         relates = message_id(text)
-        for ad in self._by_sock.get(id(sock), []):
-            scopes = ad["scopes"]
-            if not scopes_match(text, scopes):
+        if relates in self._seen:
+            return
+        self._seen.append(relates)
+        for ad in self._targets:
+            if not scopes_match(text, ad["scopes"]):
                 continue
-            packet = build_probe_match(relates, ad["endpoint_uuid"], scopes, ad["xaddr"])
+            sock = self._senders.get(ad["ip"]) or self._listener
+            if sock is None:
+                continue
+            packet = build_probe_match(relates, ad["endpoint_uuid"], ad["scopes"], ad["xaddr"], next(self._numbers))
             try:
                 sock.sendto(packet, addr)
             except OSError as exc:
-                log.debug("probe reply failed: %s", exc)
+                log.debug("probe reply from %s failed: %s", ad["ip"], exc)

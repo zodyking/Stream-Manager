@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import uuid
 
 from aiohttp import web
@@ -14,7 +15,7 @@ from .discovery import DiscoveryService
 from .engine import Go2RtcEngine, find_binary
 from .ha_client import HaClient
 from .stream_manager import StreamManager
-from .web import _resync, setup_routes
+from .web import _resync, setup_routes, sync_alias_sites
 
 log = logging.getLogger("onvif_proxy")
 
@@ -62,6 +63,7 @@ def build_app(settings: Settings | None = None) -> web.Application:
 
     async def on_cleanup(_app: web.Application) -> None:
         _app["discovery"].stop()
+        _app["aliases"].teardown()
         await ha.stop()
         engine.stop()
 
@@ -79,7 +81,15 @@ async def serve(settings: Settings | None = None) -> None:
     await web.TCPSite(runner, "0.0.0.0", settings.ui_port).start()
     if settings.onvif_port != settings.ui_port:
         await web.TCPSite(runner, "0.0.0.0", settings.onvif_port).start()
+    await sync_alias_sites(app)
     stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for name in ("SIGTERM", "SIGINT"):
+        if hasattr(signal, name):
+            try:
+                loop.add_signal_handler(getattr(signal, name), stop.set)
+            except (NotImplementedError, RuntimeError):
+                pass
     try:
         await stop.wait()
     finally:

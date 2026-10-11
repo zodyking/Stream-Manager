@@ -22,6 +22,8 @@ PRE_AUTH = {
 }
 
 PROFILE_TOKEN = "main"
+SUB_TOKEN = "sub"
+FIRMWARE = "1.0.6"
 
 
 @dataclass
@@ -166,7 +168,7 @@ def _media_uri(uri: str) -> str:
 def _source_configuration(camera: Camera) -> str:
     output = camera.output
     return (
-        '<tt:Name>VideoSource</tt:Name><tt:UseCount>1</tt:UseCount>'
+        '<tt:Name>VideoSource</tt:Name><tt:UseCount>2</tt:UseCount>'
         "<tt:SourceToken>vs_1</tt:SourceToken>"
         f'<tt:Bounds x="0" y="0" width="{output.width}" height="{output.height}"/>'
     )
@@ -175,7 +177,7 @@ def _source_configuration(camera: Camera) -> str:
 def _encoder_configuration(camera: Camera) -> str:
     output = camera.output
     return (
-        "<tt:Name>H264</tt:Name><tt:UseCount>1</tt:UseCount>"
+        "<tt:Name>H264</tt:Name><tt:UseCount>2</tt:UseCount>"
         "<tt:Encoding>H264</tt:Encoding>"
         f"<tt:Resolution><tt:Width>{output.width}</tt:Width><tt:Height>{output.height}</tt:Height></tt:Resolution>"
         "<tt:Quality>5</tt:Quality>"
@@ -197,18 +199,18 @@ def _named_config(operation: str, token: str, body: str) -> str:
     )
 
 
-def _profile_xml(camera: Camera) -> str:
-    safe = xml_escape(camera.name)
+def _profile_xml(camera: Camera, token: str = PROFILE_TOKEN, tag: str = "trt:Profiles") -> str:
+    label = "MainStream" if token == PROFILE_TOKEN else "SubStream"
     return (
-        f'<trt:Profiles token="{PROFILE_TOKEN}" fixed="true">'
-        f"<tt:Name>{safe}</tt:Name>"
+        f'<{tag} token="{token}" fixed="true">'
+        f"<tt:Name>{label}</tt:Name>"
         '<tt:VideoSourceConfiguration token="vsc_1">'
         + _source_configuration(camera)
         + "</tt:VideoSourceConfiguration>"
         '<tt:VideoEncoderConfiguration token="vec_1">'
         + _encoder_configuration(camera)
         + "</tt:VideoEncoderConfiguration>"
-        "</trt:Profiles>"
+        f"</{tag}>"
     )
 
 
@@ -231,15 +233,18 @@ def _scopes(camera: Camera) -> list[tuple[str, str]]:
 def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: str) -> str:
     if operation == "GetSystemDateAndTime":
         now = datetime.now(timezone.utc)
-        return envelope(
-            "<tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime>"
-            "<tt:DateTimeType>NTP</tt:DateTimeType><tt:DaylightSavings>false</tt:DaylightSavings>"
-            "<tt:TimeZone><tt:TZ>UTC</tt:TZ></tt:TimeZone><tt:UTCDateTime>"
+        stamp = (
             f"<tt:Time><tt:Hour>{now.hour}</tt:Hour><tt:Minute>{now.minute}</tt:Minute>"
             f"<tt:Second>{now.second}</tt:Second></tt:Time>"
             f"<tt:Date><tt:Year>{now.year}</tt:Year><tt:Month>{now.month}</tt:Month>"
             f"<tt:Day>{now.day}</tt:Day></tt:Date>"
-            "</tt:UTCDateTime></tds:SystemDateAndTime></tds:GetSystemDateAndTimeResponse>"
+        )
+        return envelope(
+            "<tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime>"
+            "<tt:DateTimeType>NTP</tt:DateTimeType><tt:DaylightSavings>false</tt:DaylightSavings>"
+            "<tt:TimeZone><tt:TZ>UTC0</tt:TZ></tt:TimeZone>"
+            f"<tt:UTCDateTime>{stamp}</tt:UTCDateTime><tt:LocalDateTime>{stamp}</tt:LocalDateTime>"
+            "</tds:SystemDateAndTime></tds:GetSystemDateAndTimeResponse>"
         )
     if operation == "GetCapabilities":
         return envelope(
@@ -255,7 +260,9 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
             f"<tt:Media><tt:XAddr>{xml_escape(endpoints.media)}</tt:XAddr>"
             "<tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast>"
             "<tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP>"
-            "</tt:StreamingCapabilities></tt:Media>"
+            "</tt:StreamingCapabilities>"
+            "<tt:Extension><tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>2</tt:MaximumNumberOfProfiles>"
+            "</tt:ProfileCapabilities></tt:Extension></tt:Media>"
             "</tds:Capabilities></tds:GetCapabilitiesResponse>"
         )
     if operation == "GetServices":
@@ -283,9 +290,9 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
             "<tds:GetDeviceInformationResponse>"
             "<tds:Manufacturer>Stream Manager</tds:Manufacturer>"
             "<tds:Model>Virtual Camera</tds:Model>"
-            "<tds:FirmwareVersion>1.0.0</tds:FirmwareVersion>"
-            f"<tds:SerialNumber>{xml_escape(camera.id)}</tds:SerialNumber>"
-            "<tds:HardwareId>onvif-proxy</tds:HardwareId>"
+            f"<tds:FirmwareVersion>{FIRMWARE}</tds:FirmwareVersion>"
+            f"<tds:SerialNumber>SM-{xml_escape(camera.id.upper())}</tds:SerialNumber>"
+            f"<tds:HardwareId>{xml_escape((camera.mac or camera.id).replace(':', '').upper())}</tds:HardwareId>"
             "</tds:GetDeviceInformationResponse>"
         )
     if operation == "GetScopes":
@@ -311,21 +318,29 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
         return envelope("<tds:SetDiscoveryModeResponse/>")
     if operation == "GetNetworkInterfaces":
         return envelope(
-            '<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="nic_1">'
-            "<tt:Enabled>true</tt:Enabled><tt:IPv4><tt:Enabled>true</tt:Enabled><tt:Config>"
+            '<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="eth0">'
+            "<tt:Enabled>true</tt:Enabled>"
+            + (
+                f"<tt:Info><tt:Name>eth0</tt:Name><tt:HwAddress>{xml_escape(camera.mac)}</tt:HwAddress><tt:MTU>1500</tt:MTU></tt:Info>"
+                if camera.mac
+                else ""
+            )
+            + "<tt:IPv4><tt:Enabled>true</tt:Enabled><tt:Config>"
             "<tt:Manual><tt:Address>"
             + xml_escape(camera.listen_ip)
             + f"</tt:Address><tt:PrefixLength>{int(camera.prefix_length or 24)}</tt:PrefixLength></tt:Manual>"
             "<tt:DHCP>false</tt:DHCP></tt:Config></tt:IPv4></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>"
         )
     if operation == "GetProfiles":
-        return envelope("<trt:GetProfilesResponse>" + _profile_xml(camera) + "</trt:GetProfilesResponse>")
-    if operation == "GetProfile":
         return envelope(
-            "<trt:GetProfileResponse>"
-            + _profile_xml(camera).replace("trt:Profiles", "trt:Profile")
-            + "</trt:GetProfileResponse>"
+            "<trt:GetProfilesResponse>"
+            + _profile_xml(camera, PROFILE_TOKEN)
+            + _profile_xml(camera, SUB_TOKEN)
+            + "</trt:GetProfilesResponse>"
         )
+    if operation == "GetProfile":
+        token = SUB_TOKEN if _text(xml, "ProfileToken") == SUB_TOKEN else PROFILE_TOKEN
+        return envelope("<trt:GetProfileResponse>" + _profile_xml(camera, token, "trt:Profile") + "</trt:GetProfileResponse>")
     if operation == "GetVideoSources":
         output = camera.output
         return envelope(
@@ -406,11 +421,11 @@ def dispatch(
         operation = operation_name(xml)
     except (ET.ParseError, ValueError) as exc:
         return SoapResult(400, fault(str(exc)))
-    if camera.username:
+    if camera.username and operation not in PRE_AUTH:
         token = wsse_ok(xml, camera.username, camera.password)
         if token is False:
             return SoapResult(400, fault("invalid username token", "ter:NotAuthorized"))
-        if token is None and operation not in PRE_AUTH:
+        if token is None:
             if not digest_ok(authorization, method, camera.username, camera.password, nonce):
                 challenge = (
                     f'Digest realm="onvif-proxy", nonce="{nonce}", qop="auth", algorithm=MD5, '

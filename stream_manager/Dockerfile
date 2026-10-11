@@ -4,7 +4,7 @@ ARG BUILD_ARCH=amd64
 ARG BUILD_VERSION=1.0.0
 ARG GO2RTC_VERSION=1.9.14
 
-RUN apk add --no-cache ffmpeg curl iproute2
+RUN apk add --no-cache ffmpeg curl iproute2 nftables
 
 RUN case "${BUILD_ARCH}" in \
       aarch64) ASSET=go2rtc_linux_arm64 ;; \

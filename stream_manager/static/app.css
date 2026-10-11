@@ -482,6 +482,7 @@ input[type="file"] { padding: var(--sp-2) var(--sp-3); }
   background: color-mix(in srgb, var(--primary-color) 12%, transparent);
   color: var(--primary-color);
 }
+.card .banner { margin: var(--sp-3) 0; }
 .empty {
   display: flex;
   flex-direction: column;

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin
@@ -21,6 +23,7 @@ log = logging.getLogger("onvif_proxy.web")
 STATIC = Path(__file__).resolve().parent.parent / "static"
 _INGRESS = re.compile(r"^/[A-Za-z0-9_./-]*$")
 _EXTRA_SLASHES = re.compile(r"/{2,}")
+_RESTORE_EVERY = 60.0
 
 
 @web.middleware
@@ -108,7 +111,7 @@ def _place(app: web.Application, camera, previous) -> None:
 
 async def sync_alias_sites(app: web.Application) -> None:
     runner = app.get("runner")
-    if runner is None:
+    if runner is None or runner.server is None:
         return
     sites: dict = app.setdefault("alias_sites", {})
     wanted = {
@@ -126,7 +129,7 @@ async def sync_alias_sites(app: web.Application) -> None:
         site = web.TCPSite(runner, ip, 80)
         try:
             await site.start()
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             log.warning("ONVIF port 80 on %s is unavailable: %s", ip, exc)
             camera.service_port = app["settings"].onvif_port
             changed = True
@@ -137,10 +140,10 @@ async def sync_alias_sites(app: web.Application) -> None:
 
 
 async def _resync(app: web.Application) -> None:
-    try:
-        app["aliases"].restore()
-    except ValueError as exc:
-        log.warning("could not restore camera addresses: %s", exc)
+    now = time.monotonic()
+    if now - app.get("aliases_restored", -_RESTORE_EVERY) >= _RESTORE_EVERY:
+        app["aliases_restored"] = now
+        await asyncio.to_thread(app["aliases"].restore)
     await sync_alias_sites(app)
     discovery_ads = []
     for camera in app["store"].cameras:
@@ -177,6 +180,7 @@ async def status(request: web.Request) -> web.Response:
                 "url": "" if settings.supervisor else settings.ha_url,
             },
             "discovery": app["discovery"].status,
+            "arp_isolation": app["aliases"].arp_mode,
             "engine": {
                 "running": bool(engine.running and engine.ping()) if engine.binary else False,
                 "binary": bool(engine.binary),
@@ -217,7 +221,7 @@ async def create_camera(request: web.Request) -> web.Response:
     payload["id"] = ""
     try:
         camera = camera_from_dict(payload)
-        _place(request.app, camera, None)
+        await asyncio.to_thread(_place, request.app, camera, None)
     except ValueError as exc:
         return _error(str(exc))
     request.app["store"].upsert(camera)
@@ -233,7 +237,7 @@ async def update_camera(request: web.Request) -> web.Response:
     payload["id"] = current.id
     try:
         camera = camera_from_dict(payload, existing=current)
-        _place(request.app, camera, current)
+        await asyncio.to_thread(_place, request.app, camera, current)
     except ValueError as exc:
         return _error(str(exc))
     request.app["store"].upsert(camera)
@@ -245,7 +249,7 @@ async def delete_camera(request: web.Request) -> web.Response:
     camera_id = request.match_info["camera_id"]
     current = request.app["store"].get(camera_id)
     if current and current.virtual_ip:
-        request.app["aliases"].release(current.listen_ip)
+        await asyncio.to_thread(request.app["aliases"].release, current.listen_ip)
     if not request.app["store"].delete(camera_id):
         return _error("camera not found", 404)
     await _resync(request.app)

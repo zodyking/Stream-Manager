@@ -79,6 +79,9 @@ class Camera:
     virtual_ip: bool = False
     service_port: int = 0
     prefix_length: int = 24
+    requested_ip: str = ""
+    mac: str = ""
+    link: str = ""
     source_interface: str = ""
     source_ip: str = ""
     username: str = ""
@@ -254,6 +257,12 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
             IPv4Address(source_ip)
         except ValueError as exc:
             raise ValueError("listening network must be an IPv4 address") from exc
+    requested_ip = str(raw.get("requested_ip") or "").strip()
+    if requested_ip:
+        try:
+            IPv4Address(requested_ip)
+        except ValueError as exc:
+            raise ValueError("camera address must be an IPv4 address such as 192.168.1.60") from exc
     sources = [source_from_dict(item) for item in raw.get("sources") or []]
     if not sources:
         raise ValueError("add at least one source")
@@ -279,6 +288,9 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
         virtual_ip=bool(raw.get("virtual_ip", False)),
         service_port=int(raw.get("service_port") or 0),
         prefix_length=int(raw.get("prefix_length") or 24),
+        requested_ip=requested_ip,
+        mac=str(raw.get("mac") or "").strip(),
+        link=str(raw.get("link") or "").strip(),
         source_interface=str(raw.get("source_interface") or "").strip(),
         source_ip=source_ip,
         username=str(raw.get("username") or ""),

@@ -32,6 +32,8 @@ def _linux() -> list[dict[str, str]]:
     found: list[dict[str, str]] = []
     try:
         for name in sorted(os.listdir(root)):
+            if name.startswith("smv"):
+                continue
             try:
                 packed = struct.pack("256s", name.encode("utf-8")[:15])
                 info = fcntl.ioctl(sock.fileno(), 0x8915, packed)
@@ -46,7 +48,8 @@ def _linux() -> list[dict[str, str]]:
                     prefix = str(sum(bin(int(part)).count("1") for part in mask.split(".")))
                 except OSError:
                     prefix = "24"
-                found.append({"name": name, "ip": ip, "prefix": prefix})
+                wireless = os.path.exists(os.path.join(root, name, "wireless")) or os.path.exists(os.path.join(root, name, "phy80211"))
+                found.append({"name": name, "ip": ip, "prefix": prefix, "wireless": wireless})
     finally:
         sock.close()
     return found
