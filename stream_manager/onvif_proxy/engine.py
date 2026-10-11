@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -40,6 +41,62 @@ def redact(src: str) -> str:
     return re.sub(r"//[^/\s@]+@", "//***@", src)
 
 
+def source_needle(src: str) -> str:
+    """The input text ffmpeg is given, without the named templates."""
+    raw = src[7:] if src.startswith("ffmpeg:") else src
+    return raw.split("#", 1)[0]
+
+
+def producer_pids(commands: list[tuple[int, str]], needle: str) -> list[int]:
+    """FFmpeg processes whose command line is still the previous source."""
+    if len(needle) < 4:
+        return []
+    return [pid for pid, command in commands if "ffmpeg" in command.lower() and needle in command]
+
+
+def child_commands(parent: int) -> list[tuple[int, str]]:
+    """Command lines of processes started by go2rtc."""
+    proc = Path("/proc")
+    if proc.is_dir():
+        found: list[tuple[int, str]] = []
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+                fields = stat.rsplit(")", 1)[-1].split()
+                if len(fields) < 2 or int(fields[1]) != parent:
+                    continue
+                command = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+            except (OSError, ValueError):
+                continue
+            found.append((int(entry.name), command))
+        return found
+    if os.name != "nt":
+        return []
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"ParentProcessId="
+        + str(int(parent))
+        + "\" | ForEach-Object { $_.ProcessId.ToString() + \"`t\" + $_.CommandLine }"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    found = []
+    for line in completed.stdout.splitlines():
+        pid, separator, command = line.partition("\t")
+        if separator and pid.strip().isdigit():
+            found.append((int(pid.strip()), command))
+    return found
+
+
 class Go2RtcEngine:
     def __init__(self, binary: str, api_port: int, rtsp_port: int, data_dir: Path) -> None:
         self.binary = binary
@@ -50,6 +107,7 @@ class Go2RtcEngine:
         self.running = False
         self.error = ""
         self._known: set[str] = set()
+        self._sources: dict[str, str] = {}
         self.templates: dict[str, str] = {}
         self._loaded: dict[str, str] = {}
         self.recent: deque[str] = deque(maxlen=60)
@@ -138,6 +196,7 @@ class Go2RtcEngine:
             except subprocess.TimeoutExpired:
                 self.process.kill()
         self.running = False
+        self._sources.clear()
 
     def ping(self) -> bool:
         try:
@@ -181,6 +240,7 @@ class Go2RtcEngine:
             self.error = "go2rtc exited"
             return self.error
         log.info("stream %s source %s", name, redact(src))
+        previous = self._sources.get(name)
         status, body = self._request("PATCH", name, src)
         if status == 400:
             status, body = self._request("PUT", name, src)
@@ -190,14 +250,45 @@ class Go2RtcEngine:
             self.error = body[:300] or f"engine HTTP {status}"
             return self.error
         self._known.add(name)
+        self._sources[name] = src
         self.error = ""
+        if previous and previous != src:
+            self._release(previous)
         return ""
+
+    def _commands(self) -> list[tuple[int, str]]:
+        if self.process is None or self.process.poll() is not None:
+            return []
+        return child_commands(self.process.pid)
+
+    def _stop(self, pid: int) -> None:
+        os.kill(pid, signal.SIGTERM)
+
+    def _release(self, previous: str) -> None:
+        """End the ffmpeg that is still publishing the old source.
+
+        go2rtc remembers the new address but leaves the running encoder alone.
+        Stopping that process makes it reconnect, and viewers keep the same stream.
+        """
+        needle = source_needle(previous)
+        try:
+            commands = self._commands()
+        except OSError:
+            log.warning("could not list ffmpeg processes")
+            return
+        for pid in producer_pids(commands, needle):
+            log.info("stopping ffmpeg %s so the published stream can change source", pid)
+            try:
+                self._stop(pid)
+            except OSError:
+                log.warning("could not stop ffmpeg %s", pid)
 
     def remove(self, name: str) -> None:
         if not self.binary:
             return
         self._request("DELETE", name, None)
         self._known.discard(name)
+        self._sources.pop(name, None)
 
 
 class RecordingEngine:

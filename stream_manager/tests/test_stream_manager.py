@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from onvif_proxy.engine import RecordingEngine
+from onvif_proxy.engine import Go2RtcEngine, RecordingEngine, producer_pids, source_needle
 from onvif_proxy.ha_client import Playback
 from onvif_proxy.discovery import DiscoveryService, scope_list
 from onvif_proxy.models import Source, camera_from_dict
@@ -245,6 +245,40 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(addr, ("239.255.255.250", 3702))
         self.assertIn(b"discovery/Hello", packet)
         self.assertIn(b"dn:NetworkVideoTransmitter", packet)
+
+
+class ProducerRestartTests(unittest.TestCase):
+    def test_needle_is_the_input_without_templates(self):
+        self.assertEqual(source_needle("ffmpeg:rtsp://cam/live#input=sm1#video=sm2"), "rtsp://cam/live")
+
+    def test_only_the_previous_ffmpeg_is_stopped(self):
+        commands = [
+            (10, "ffmpeg -i rtsp://cam/old -f rtsp rtsp://127.0.0.1/old"),
+            (11, "ffmpeg -i rtsp://cam/new -f rtsp rtsp://127.0.0.1/new"),
+            (12, "go2rtc -config go2rtc.yaml"),
+        ]
+        self.assertEqual(producer_pids(commands, "rtsp://cam/old"), [10])
+
+    def test_changing_source_stops_the_running_encoder(self):
+        engine = Go2RtcEngine("go2rtc", 1984, 8554, Path("."))
+        engine.running = True
+
+        class Alive:
+            pid = 5
+
+            def poll(self):
+                return None
+
+        engine.process = Alive()
+        engine._sources["cam"] = "ffmpeg:rtsp://cam/old#video=h264"
+        engine._request = lambda method, name, src: (200, "")
+        stopped = []
+        engine._commands = lambda: [(9, "ffmpeg -i rtsp://cam/old -f rtsp rtsp://127.0.0.1/x")]
+        engine._stop = stopped.append
+        self.assertEqual(engine.upsert("cam", "ffmpeg:rtsp://cam/new#video=h264"), "")
+        self.assertEqual(stopped, [9])
+        self.assertEqual(engine.upsert("cam", "ffmpeg:rtsp://cam/new#video=h264"), "")
+        self.assertEqual(stopped, [9])
 
 
 if __name__ == "__main__":

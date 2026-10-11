@@ -77,10 +77,15 @@ def build_app(settings: Settings | None = None) -> web.Application:
             """Rotate timed sources even when Home Assistant is not connected."""
             while True:
                 await asyncio.sleep(1)
-                cameras = _app["store"].cameras
-                if not any(camera.enabled and camera.cycle_enabled and len(camera.sources) > 1 for camera in cameras):
-                    continue
-                await _app["streams"].sync(cameras, dict(_app["ha"].states), _app["ha"])
+                try:
+                    cameras = _app["store"].cameras
+                    if not any(camera.enabled and camera.cycle_enabled and len(camera.sources) > 1 for camera in cameras):
+                        continue
+                    await _app["streams"].sync(cameras, dict(_app["ha"].states), _app["ha"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("timed source switch failed")
 
         _app["cycle_task"] = asyncio.create_task(cycle_loop())
         log.info("UI http://127.0.0.1:%s", settings.ui_port)
