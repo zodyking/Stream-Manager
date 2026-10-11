@@ -304,9 +304,12 @@ async def upload_image(request: web.Request) -> web.Response:
     field = await reader.next()
     if field is None:
         return _error("upload a file field")
-    suffix = Path(field.filename or "image.jpg").suffix.lower()
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
-        suffix = ".jpg"
+    suffix = Path(field.filename or "").suffix.lower()
+    images = {".jpg", ".jpeg", ".png", ".webp"}
+    videos = {".gif", ".mp4", ".webm", ".mov", ".mkv", ".m4v"}
+    if suffix not in images | videos:
+        return _error("upload a JPEG, PNG, WebP, GIF, MP4, WebM, MOV, or MKV file")
+    limit = 8_000_000 if suffix in images else 64_000_000
     name = uuid.uuid4().hex + suffix
     folder = request.app["settings"].data_dir / "images"
     folder.mkdir(parents=True, exist_ok=True)
@@ -318,9 +321,9 @@ async def upload_image(request: web.Request) -> web.Response:
             if not chunk:
                 break
             size += len(chunk)
-            if size > 8_000_000:
+            if size > limit:
                 target.unlink(missing_ok=True)
-                return _error("image is larger than 8 MB")
+                return _error("that file is too large")
             handle.write(chunk)
     return _json({"image_path": f"images/{name}"})
 
@@ -455,6 +458,8 @@ async def stream_probe(request: web.Request) -> web.Response:
         upstream = {"ok": False, "url": "", "error": "This ONVIF source has no RTSP address to open."}
     elif source and source.type == "image":
         upstream = {"ok": False, "url": "", "error": "This source is a still image, so there is no RTSP or RTSPS stream to open."}
+    elif source and source.type == "media":
+        upstream = {"ok": False, "url": "", "error": "This source is an uploaded video or GIF, so there is no RTSP or RTSPS stream to open."}
     else:
         upstream = {"ok": False, "url": "", "error": "The active source is not an RTSP or RTSPS stream."}
     return _json({"onvif": onvif, "source": upstream, "log": _camera_log(app, camera)})

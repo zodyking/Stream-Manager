@@ -1,7 +1,7 @@
 import unittest
 
 from onvif_proxy.models import camera_from_dict
-from onvif_proxy.rules import decide, matches, selected_source
+from onvif_proxy.rules import cycle_decision, decide, matches, selected_source
 
 
 def sample(**overrides):
@@ -66,6 +66,36 @@ class RuleTests(unittest.TestCase):
         self.assertTrue(matches("gt", "70", "70.5"))
         self.assertTrue(matches("lt", "70", "69"))
         self.assertFalse(matches("gt", "70", "70"))
+
+    def test_cycle_walks_sources_and_a_rule_still_wins(self):
+        camera = sample(cycle_enabled=True, cycle_seconds=10, rules_enabled=False)
+        self.assertEqual(cycle_decision(camera, 0).source_id, "live")
+        self.assertEqual(cycle_decision(camera, 10).source_id, "still")
+        self.assertEqual(cycle_decision(camera, 25).source_id, "other")
+        self.assertEqual(cycle_decision(camera, 30).source_id, "live")
+        ruled = sample(cycle_enabled=True, cycle_seconds=10)
+        self.assertEqual(decide(ruled, {"switch.printer": "on"}).reason, "rule")
+
+    def test_cycle_needs_two_sources(self):
+        camera = sample(cycle_enabled=True)
+        camera.sources = camera.sources[:1]
+        self.assertIsNone(cycle_decision(camera, 100))
+
+    def test_media_file_must_be_a_video_or_gif(self):
+        with self.assertRaises(ValueError):
+            camera_from_dict({
+                "name": "Clip",
+                "listen_ip": "127.0.0.1",
+                "fallback_source_id": "clip",
+                "sources": [{"id": "clip", "type": "media", "name": "Clip", "image_path": "images/notes.txt"}],
+            })
+        camera = camera_from_dict({
+            "name": "Clip",
+            "listen_ip": "127.0.0.1",
+            "fallback_source_id": "clip",
+            "sources": [{"id": "clip", "type": "media", "name": "Clip", "image_path": "images/loop.mp4"}],
+        })
+        self.assertEqual(camera.sources[0].kind(), "file")
 
     def test_disabled_camera(self):
         camera = sample(enabled=False)

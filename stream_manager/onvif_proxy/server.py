@@ -22,7 +22,7 @@ log = logging.getLogger("onvif_proxy")
 
 def build_app(settings: Settings | None = None) -> web.Application:
     settings = settings or load_settings()
-    app = web.Application(client_max_size=10 * 1024 * 1024)
+    app = web.Application(client_max_size=70 * 1024 * 1024)
     binary = find_binary(settings.go2rtc_bin)
     if binary:
         settings.rtsp_port_requested = settings.rtsp_port
@@ -72,10 +72,24 @@ def build_app(settings: Settings | None = None) -> web.Application:
         ha.on_change = kick
         await asyncio.to_thread(migrate_addresses, _app)
         await _resync(_app)
+
+        async def cycle_loop() -> None:
+            """Rotate timed sources even when Home Assistant is not connected."""
+            while True:
+                await asyncio.sleep(1)
+                cameras = _app["store"].cameras
+                if not any(camera.enabled and camera.cycle_enabled and len(camera.sources) > 1 for camera in cameras):
+                    continue
+                await _app["streams"].sync(cameras, dict(_app["ha"].states), _app["ha"])
+
+        _app["cycle_task"] = asyncio.create_task(cycle_loop())
         log.info("UI http://127.0.0.1:%s", settings.ui_port)
         log.info("ONVIF http://127.0.0.1:%s/onvif/<camera>/device_service", settings.onvif_port)
 
     async def on_cleanup(_app: web.Application) -> None:
+        task = _app.get("cycle_task")
+        if task is not None:
+            task.cancel()
         _app["discovery"].stop()
         _app["aliases"].teardown()
         await ha.stop()

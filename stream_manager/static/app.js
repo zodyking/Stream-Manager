@@ -20,7 +20,7 @@
   const iconDown = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>';
   const iconTrash = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"></path></svg>';
 
-  const sourceLabels = { rtsp: "RTSP", ha_camera: "Home Assistant camera", onvif: "ONVIF device", image: "Still image" };
+  const sourceLabels = { rtsp: "RTSP", ha_camera: "Home Assistant camera", onvif: "ONVIF device", image: "Still image", media: "Video or GIF" };
   const operatorLabels = [["eq", "equals"], ["ne", "does not equal"], ["gt", "number above"], ["lt", "number below"]];
 
   function adoptParentTheme() {
@@ -113,6 +113,7 @@
     if (!camera.enabled || runtime.reason === "disabled") return { kind: "off", label: "Disabled" };
     if (runtime.error) return { kind: "bad", label: "Error" };
     if (runtime.source_kind === "image" || runtime.source_type === "image") return { kind: "still", label: "Still image" };
+    if (runtime.source_kind === "file" || runtime.source_type === "media") return { kind: "live", label: "File" };
     return { kind: "live", label: "Live" };
   }
 
@@ -387,6 +388,8 @@
       username: "",
       password: "",
       rules_enabled: false,
+      cycle_enabled: false,
+      cycle_seconds: 30,
       fallback_source_id: source.id,
       sources: [source],
       rules: [],
@@ -407,6 +410,8 @@
     camera.username = form.username.value;
     camera.password = form.password.value;
     camera.rules_enabled = form.rules_enabled.checked;
+    camera.cycle_enabled = form.cycle_enabled.checked;
+    camera.cycle_seconds = Math.min(3600, Math.max(5, Number(form.cycle_seconds.value) || 30));
     camera.sources.forEach(function (source, index) {
       const take = function (name, apply) {
         const node = form.querySelector('[name="' + name + '"][data-i="' + index + '"]');
@@ -446,7 +451,7 @@
   }
 
   function sourceBlock(source, index, list) {
-    const types = ["rtsp", "ha_camera", "onvif", "image"].map(function (type) {
+    const types = ["rtsp", "ha_camera", "onvif", "image", "media"].map(function (type) {
       return '<option value="' + type + '"' + (source.type === type ? " selected" : "") + ">" + sourceLabels[type] + "</option>";
     }).join("");
     let extra = "";
@@ -459,6 +464,10 @@
         '<label class="field">Port<input name="sport" data-i="' + index + '" type="number" min="1" max="65535" value="' + esc(source.port || 80) + '"></label>' +
         '<label class="field">Username<input name="suser" data-i="' + index + '" value="' + esc(source.username) + '" autocomplete="off"></label>' +
         '<label class="field">Password<input name="spass" data-i="' + index + '" type="password" value="' + esc(source.password) + '" autocomplete="off"></label></div>';
+    } else if (source.type === "media") {
+      extra = '<label class="field">File<input name="spath" data-i="' + index + '" value="' + esc(source.image_path) + '" placeholder="images/clip.mp4" readonly></label>' +
+        '<label class="field">Upload video or GIF<input name="supload" data-i="' + index + '" type="file" accept="image/gif,video/mp4,video/webm,video/quicktime,.mkv,.m4v"></label>' +
+        '<p class="help">MP4, WebM, MOV, MKV, or GIF, up to 64 MB. The file loops.</p>';
     } else {
       extra = '<label class="field">Image file in the data directory<input name="spath" data-i="' + index + '" value="' + esc(source.image_path) + '" placeholder="images/standby.jpg"></label>' +
         '<label class="field">Or image URL<input name="simg" data-i="' + index + '" value="' + esc(source.image_url) + '" placeholder="https://example.com/standby.jpg"></label>' +
@@ -622,7 +631,10 @@
       const video = formSection("4", "sec-video", "Video output", "What ONVIF clients receive. Protect works best with H.264 Main, 2 second keyframes and 2,000–4,000 kbps.",
         outputFields(camera));
 
-      const automation = formSection("5", "sec-automation", "Automatic switching", "Show a different source depending on a Home Assistant entity, such as a printer turning on.",
+      const automation = formSection("5", "sec-automation", "Automatic switching", "Rotate the sources on a timer, or switch when a Home Assistant entity changes.",
+        '<label class="switch"><input type="checkbox" name="cycle_enabled"' + (camera.cycle_enabled ? " checked" : "") + '><span>Cycle through the sources in order</span></label>' +
+        '<div class="fields inset"><label class="field">Show each source for<span class="suffix-field"><input name="cycle_seconds" type="number" min="5" max="3600" required value="' + esc(camera.cycle_seconds || 30) + '"><span class="suffix">sec</span></span></label></div>' +
+        '<p class="help">The picture changes at the next keyframe, so the switch stays short. A matching rule below still takes over.</p>' +
         '<label class="switch"><input type="checkbox" name="rules_enabled"' + (camera.rules_enabled ? " checked" : "") + '><span>Switch sources from entity state</span></label>' +
         '<div class="fields inset"><label class="field">When no rule matches, show<select name="fallback">' + fallback + "</select></label></div>" +
         '<div class="rules">' +
@@ -768,6 +780,8 @@
     if (!camera.enabled || runtime.reason === "disabled") return "This camera is disabled.";
     if (runtime.reason === "no_source" || !runtime.source_name) return "No source is available.";
     if (runtime.source_kind === "image") return "Using the still image.";
+    if (runtime.reason === "cycle") return "Cycling sources. Showing " + runtime.source_name + ".";
+    if (runtime.source_kind === "file") return "Playing " + runtime.source_name + ".";
     return "Showing " + runtime.source_name + ".";
   }
 
@@ -781,6 +795,7 @@
       }
       return "Matched a rule";
     }
+    if (runtime.reason === "cycle") return "Each source plays for " + (camera.cycle_seconds || 30) + " seconds";
     if (runtime.reason === "fallback") return "Fallback source";
     if (runtime.reason === "disabled") return "Disabled";
     if (runtime.reason === "no_source") return "No source";

@@ -8,7 +8,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from ipaddress import IPv4Address
 
-SOURCE_TYPES = ("ha_camera", "rtsp", "onvif", "image")
+SOURCE_TYPES = ("ha_camera", "rtsp", "onvif", "image", "media")
+MEDIA_EXTENSIONS = (".gif", ".mp4", ".webm", ".mov", ".mkv", ".m4v")
 OPERATORS = ("eq", "ne", "gt", "lt")
 RESOLUTIONS = ((1920, 1080), (1280, 720), (640, 480), (640, 360))
 H264_PROFILES = ("Baseline", "Main", "High")
@@ -45,7 +46,11 @@ class Source:
     image_url: str = ""
 
     def kind(self) -> str:
-        return "image" if self.type == "image" else "stream"
+        if self.type == "image":
+            return "image"
+        if self.type == "media":
+            return "file"
+        return "stream"
 
 
 @dataclass
@@ -87,6 +92,8 @@ class Camera:
     username: str = ""
     password: str = ""
     rules_enabled: bool = False
+    cycle_enabled: bool = False
+    cycle_seconds: int = 30
     fallback_source_id: str = ""
     sources: list[Source] = field(default_factory=list)
     rules: list[Rule] = field(default_factory=list)
@@ -144,7 +151,7 @@ def source_from_dict(raw: dict) -> Source:
         raise ValueError("source must be an object")
     source_type = str(raw.get("type") or "").strip()
     if source_type not in SOURCE_TYPES:
-        raise ValueError("source type must be ha_camera, rtsp, onvif, or image")
+        raise ValueError("source type must be ha_camera, rtsp, onvif, image, or media")
     source = Source(
         id=_token(raw.get("id")),
         type=source_type,
@@ -182,6 +189,13 @@ def source_from_dict(raw: dict) -> Source:
             raise ValueError("image path cannot contain quotes")
         if source.image_path and (".." in Path(source.image_path).parts or Path(source.image_path).is_absolute()):
             raise ValueError("image_path must be a relative file inside the data directory")
+    elif source.type == "media":
+        if not source.image_path:
+            raise ValueError("upload a video or GIF")
+        if ".." in Path(source.image_path).parts or Path(source.image_path).is_absolute():
+            raise ValueError("the file must stay inside the data directory")
+        if Path(source.image_path).suffix.lower() not in MEDIA_EXTENSIONS:
+            raise ValueError("video or GIF must be gif, mp4, webm, mov, mkv, or m4v")
     return source
 
 
@@ -296,6 +310,8 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
         username=str(raw.get("username") or ""),
         password=str(raw.get("password") or ""),
         rules_enabled=bool(raw.get("rules_enabled", False)),
+        cycle_enabled=bool(raw.get("cycle_enabled", False)),
+        cycle_seconds=_bounded_int(raw.get("cycle_seconds"), 30, 5, 3600, "cycle time"),
         fallback_source_id=fallback,
         sources=sources,
         rules=rules,

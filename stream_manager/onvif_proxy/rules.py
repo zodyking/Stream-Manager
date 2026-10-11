@@ -55,6 +55,15 @@ def decide(camera: Camera, states: dict[str, str]) -> Decision:
     return Decision(None, None, "no_source")
 
 
+def cycle_decision(camera: Camera, now: float) -> Decision | None:
+    """Walk the sources in order. A matching entity rule is left to the caller."""
+    if not camera.cycle_enabled or len(camera.sources) < 2:
+        return None
+    seconds = max(5, int(camera.cycle_seconds or 30))
+    index = int(now // seconds) % len(camera.sources)
+    return Decision(camera.sources[index].id, None, "cycle")
+
+
 def selected_source(camera: Camera, decision: Decision) -> Source | None:
     if not decision.source_id:
         return None

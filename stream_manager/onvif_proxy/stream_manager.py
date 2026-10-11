@@ -6,12 +6,13 @@ import asyncio
 import hashlib
 import logging
 import re
+import time
 from pathlib import Path
 from urllib.parse import quote
 
 from .engine import Go2RtcEngine
 from .models import Camera, Endpoints, OutputSettings, Source, endpoints_for
-from .rules import Decision, decide, selected_source
+from .rules import Decision, cycle_decision, decide, selected_source
 
 log = logging.getLogger("onvif_proxy.streams")
 
@@ -32,6 +33,12 @@ def _template(body: str) -> str:
 
 def ffmpeg_still(target: str) -> str:
     name = _template("-loop 1 -framerate 5 -i {input}")
+    return f"ffmpeg:{target}#input={name}#video=h264"
+
+
+def ffmpeg_media(target: str) -> str:
+    """Play a video or GIF in real time and loop it."""
+    name = _template("-stream_loop -1 -re -fflags +genpts -i {input}")
     return f"ffmpeg:{target}#input={name}#video=h264"
 
 
@@ -99,6 +106,13 @@ def producer_for(source: Source, *, data_dir: Path, ui_port: int, ha_mode: str |
                 path = data_dir / source.image_path
             return ffmpeg_still(path.as_posix()), None
         return ffmpeg_still(source.image_url), None
+    if source.type == "media":
+        path = Path(source.image_path)
+        if not path.is_absolute():
+            path = data_dir / source.image_path
+        if not path.is_file():
+            return None, "the video or GIF file is missing"
+        return ffmpeg_media(path.as_posix()), None
     if source.type == "ha_camera":
         if ha_error:
             return None, ha_error
@@ -144,6 +158,10 @@ class StreamManager:
 
     async def _prepare(self, camera: Camera, states: dict[str, str], ha) -> tuple[dict, str | None]:
         decision: Decision = decide(camera, states)
+        if decision.reason in {"fallback", "no_source"}:
+            cycled = cycle_decision(camera, time.monotonic())
+            if cycled is not None:
+                decision = cycled
         source = selected_source(camera, decision)
         urls = self.urls(camera)
         record = {

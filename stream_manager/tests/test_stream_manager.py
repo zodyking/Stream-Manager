@@ -1,11 +1,12 @@
+import tempfile
 import unittest
 from pathlib import Path
 
 from onvif_proxy.engine import RecordingEngine
 from onvif_proxy.ha_client import Playback
-from onvif_proxy.models import camera_from_dict
 from onvif_proxy.discovery import DiscoveryService, scope_list
-from onvif_proxy.stream_manager import StreamManager, ffmpeg_still, with_source_bind
+from onvif_proxy.models import Source, camera_from_dict
+from onvif_proxy.stream_manager import StreamManager, ffmpeg_still, ffmpeg_templates, producer_for, with_source_bind
 
 
 class FakeHa:
@@ -138,6 +139,47 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
     def test_host_route_does_not_bind_a_local_address(self):
         src = with_source_bind("ffmpeg:rtsp://camera.example/live#video=-c:v libx264", "")
         self.assertNotIn("localaddr", src)
+
+    async def test_cycle_runs_until_a_rule_matches(self):
+        cam = camera_from_dict(
+            {
+                "id": "spin",
+                "name": "Spin",
+                "listen_ip": "127.0.0.1",
+                "cycle_enabled": True,
+                "cycle_seconds": 5,
+                "rules_enabled": True,
+                "fallback_source_id": "a",
+                "sources": [
+                    {"id": "a", "type": "rtsp", "name": "A", "url": "rtsp://camera.example/a"},
+                    {"id": "b", "type": "rtsp", "name": "B", "url": "rtsp://camera.example/b"},
+                ],
+                "rules": [{"id": "r1", "entity_id": "switch.printer", "operator": "eq", "value": "on", "source_id": "b"}],
+            }
+        )
+        streams, _engine = manager(Path("."))
+        await streams.sync([cam], {}, FakeHa(Playback(None, None)))
+        self.assertEqual(streams.runtime["spin"]["reason"], "cycle")
+        self.assertIn(streams.runtime["spin"]["source_id"], {"a", "b"})
+        await streams.sync([cam], {"switch.printer": "on"}, FakeHa(Playback(None, None)))
+        self.assertEqual(streams.runtime["spin"]["reason"], "rule")
+        self.assertEqual(streams.runtime["spin"]["source_id"], "b")
+
+    def test_uploaded_video_loops_in_real_time(self):
+        with tempfile.TemporaryDirectory() as folder:
+            images = Path(folder) / "images"
+            images.mkdir()
+            (images / "loop.mp4").write_bytes(b"video")
+            src, error = producer_for(
+                Source(id="clip", type="media", name="Clip", image_path="images/loop.mp4"),
+                data_dir=Path(folder),
+                ui_port=1,
+                ha_mode=None,
+                ha_error=None,
+            )
+        self.assertIsNone(error)
+        self.assertTrue(src.startswith("ffmpeg:"))
+        self.assertTrue(any("stream_loop -1 -re" in body for body in ffmpeg_templates().values()))
 
     def test_still_image_template(self):
         src = ffmpeg_still("C:/data/images/off.jpg")
