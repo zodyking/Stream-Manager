@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -103,6 +104,16 @@ class Go2RtcEngine:
             return
         self.error = ""
         self.running = True
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                self.running = False
+                self.error = "The stream engine exited before it could publish the camera."
+                return
+            if self.ping():
+                return
+            time.sleep(0.1)
+        self.error = "The stream engine did not open in time."
 
     def stop(self) -> None:
         if self.process and self.process.poll() is None:
@@ -159,6 +170,8 @@ class Go2RtcEngine:
         if status == 400:
             status, body = self._request("PUT", name, src)
         if status in {0, 400}:
+            if "Connection refused" in body or body.startswith("<urlopen error"):
+                body = "The stream engine is not running, so this camera was saved but not published."
             self.error = body[:300] or f"engine HTTP {status}"
             return self.error
         self._known.add(name)
