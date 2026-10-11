@@ -82,6 +82,13 @@ class OnvifSoapTests(unittest.TestCase):
         self.assertIn("<tt:BitrateLimit>2048</tt:BitrateLimit>", profiles_xml)
         stream_xml = build_operation("GetStreamUri", cam, ENDPOINTS, envelope("<trt:GetStreamUri/>"))
         self.assertIn(ENDPOINTS.stream, stream_xml)
+        self.assertIn("<tt:GovLength>30</tt:GovLength>", profiles_xml)
+        self.assertIn("RTP_RTSP_TCP>true", capabilities)
+        encoder_xml = build_operation("GetVideoEncoderConfigurations", cam, ENDPOINTS, "")
+        self.assertIn("<tt:Encoding>H264</tt:Encoding>", encoder_xml)
+        self.assertIn("<tt:H264Profile>Main</tt:H264Profile>", encoder_xml)
+        self.assertIn('token="vec_1"', encoder_xml)
+        self.assertNotIn("not implemented", build_operation("GetAudioSources", cam, ENDPOINTS, ""))
         self.assertEqual(operation_name(envelope("<tds:GetCapabilities/>")), "GetCapabilities")
 
     def test_custom_output_is_advertised(self):

@@ -39,7 +39,14 @@ def _linux() -> list[dict[str, str]]:
             except OSError:
                 continue
             if ip:
-                found.append({"name": name, "ip": ip})
+                prefix = "24"
+                try:
+                    mask_info = fcntl.ioctl(sock.fileno(), 0x891B, packed)
+                    mask = socket.inet_ntoa(mask_info[20:24])
+                    prefix = str(sum(bin(int(part)).count("1") for part in mask.split(".")))
+                except OSError:
+                    prefix = "24"
+                found.append({"name": name, "ip": ip, "prefix": prefix})
     finally:
         sock.close()
     return found
@@ -48,7 +55,7 @@ def _linux() -> list[dict[str, str]]:
 def _windows() -> list[dict[str, str]]:
     command = (
         "Get-NetIPAddress -AddressFamily IPv4 | "
-        "Select-Object InterfaceAlias,IPAddress | ConvertTo-Json -Compress"
+        "Select-Object InterfaceAlias,IPAddress,PrefixLength | ConvertTo-Json -Compress"
     )
     try:
         completed = subprocess.run(
@@ -75,5 +82,5 @@ def _windows() -> list[dict[str, str]]:
         ip = str(row.get("IPAddress") or "")
         name = str(row.get("InterfaceAlias") or "interface")
         if ip:
-            found.append({"name": name, "ip": ip})
+            found.append({"name": name, "ip": ip, "prefix": str(row.get("PrefixLength") or 24)})
     return found

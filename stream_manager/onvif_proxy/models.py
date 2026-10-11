@@ -76,6 +76,9 @@ class Camera:
     enabled: bool = True
     interface: str = ""
     listen_ip: str = "127.0.0.1"
+    virtual_ip: bool = False
+    service_port: int = 0
+    prefix_length: int = 24
     source_interface: str = ""
     source_ip: str = ""
     username: str = ""
@@ -103,7 +106,12 @@ class Endpoints:
 
 def endpoints_for(camera: Camera, onvif_port: int, rtsp_port: int) -> Endpoints:
     ip = camera.listen_ip
-    base = f"http://{ip}:{onvif_port}/onvif/{camera.id}"
+    if camera.virtual_ip:
+        port = camera.service_port or 80
+        host = ip if port == 80 else f"{ip}:{port}"
+        base = f"http://{host}/onvif"
+    else:
+        base = f"http://{ip}:{onvif_port}/onvif/{camera.id}"
     return Endpoints(
         device=f"{base}/device_service",
         media=f"{base}/media_service",
@@ -233,7 +241,9 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
     if not isinstance(raw, dict):
         raise ValueError("camera must be an object")
     name = _require_text(raw, "name")
-    listen_ip = str(raw.get("listen_ip") or "").strip() or "127.0.0.1"
+    listen_ip = str(raw.get("listen_ip") or "").strip()
+    if not listen_ip:
+        listen_ip = "0.0.0.0"
     try:
         IPv4Address(listen_ip)
     except ValueError as exc:
@@ -266,6 +276,9 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
         enabled=bool(raw.get("enabled", True)),
         interface=str(raw.get("interface") or "").strip(),
         listen_ip=listen_ip,
+        virtual_ip=bool(raw.get("virtual_ip", False)),
+        service_port=int(raw.get("service_port") or 0),
+        prefix_length=int(raw.get("prefix_length") or 24),
         source_interface=str(raw.get("source_interface") or "").strip(),
         source_ip=source_ip,
         username=str(raw.get("username") or ""),

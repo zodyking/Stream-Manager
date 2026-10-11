@@ -205,6 +205,12 @@
     ["ONVIF quality", "5"],
   ];
 
+  function keyframeSeconds(output) {
+    const fps = Number(output.framerate) || 15;
+    const frames = Number(output.gov_length) || fps * 2;
+    return String(Math.max(1, Math.min(4, Math.round(frames / fps))));
+  }
+
   function outputOf(camera) {
     const output = camera.output || {};
     return {
@@ -252,7 +258,7 @@
       ["Frame rate", output.framerate + " fps"],
       ["Bitrate", output.bitrate_kbps + " kbps"],
       ["H.264 profile", output.h264_profile],
-      ["GOP length", String(output.gov_length)],
+      ["Keyframe interval", keyframeSeconds(output) + " seconds"],
     ].concat(fixedFacts(camera));
   }
 
@@ -284,7 +290,8 @@
       '<label class="field">H.264 codec profile<select name="out_profile">' + profileOptions + "</select></label>" +
       '<label class="field">Frame rate<input name="out_fps" type="number" min="1" max="30" required value="' + esc(output.framerate) + '"></label>' +
       '<label class="field">Bitrate (kbps)<input name="out_bitrate" type="number" min="128" max="8192" required value="' + esc(output.bitrate_kbps) + '"></label>' +
-      '<label class="field">GOP length<input name="out_gop" type="number" min="1" max="120" required value="' + esc(output.gov_length) + '"></label>' +
+      '<label class="field">Keyframe interval (seconds)<input name="out_gop" type="number" min="1" max="4" required value="' + esc(keyframeSeconds(output)) + '"></label>' +
+      '<p class="hint">UniFi Protect adopts H.264 Main at a 2 second keyframe interval, about 2,000–4,000 kbps, over RTSP TCP.</p>' +
       '</div><h3 class="fixed-title">Not editable</h3>' + factList(encoderFixed(camera)) + "</section>";
   }
 
@@ -363,6 +370,9 @@
       enabled: true,
       interface: "",
       listen_ip: "127.0.0.1",
+      virtual_ip: false,
+      service_port: 0,
+      prefix_length: 24,
       source_interface: "",
       source_ip: "",
       username: "",
@@ -421,7 +431,7 @@
       framerate: Number(form.out_fps.value),
       bitrate_kbps: Number(form.out_bitrate.value),
       h264_profile: form.out_profile.value,
-      gov_length: Number(form.out_gop.value),
+      gov_length: (Number(form.out_gop.value) || 2) * (Number(form.out_fps.value) || 15),
     };
   }
 
@@ -479,9 +489,21 @@
 
     function paint() {
       const known = interfaces.slice();
-      if (!known.some(function (item) { return item.ip === camera.listen_ip; })) {
+      if (camera.listen_ip && camera.listen_ip !== "0.0.0.0" && !camera.virtual_ip && !known.some(function (item) { return item.ip === camera.listen_ip; })) {
         known.unshift({ name: camera.interface || "saved", ip: camera.listen_ip });
       }
+      const broadcast = (camera.interface && known.find(function (item) { return item.name === camera.interface; }))
+        || (!id && known.find(function (item) { return item.ip !== "127.0.0.1"; }))
+        || known.find(function (item) { return item.ip === camera.listen_ip; })
+        || known[0];
+      const loopbackBroadcast = !broadcast || broadcast.ip === "127.0.0.1";
+      const keepAddress = !!(camera.virtual_ip && broadcast && camera.interface === broadcast.name && camera.listen_ip);
+      const broadcastValue = loopbackBroadcast ? "127.0.0.1" : (keepAddress ? camera.listen_ip : "");
+      const assignedText = loopbackBroadcast
+        ? "Loopback publishes only on this machine."
+        : (keepAddress
+          ? "Assigned address " + camera.listen_ip + ". ONVIF clients use http://" + camera.listen_ip + "/onvif/device_service."
+          : "A free address on this network is reserved when you save. ONVIF clients use http://that-address/onvif/device_service.");
       const sourceKnown = interfaces.slice();
       if (camera.source_ip && !sourceKnown.some(function (item) { return item.ip === camera.source_ip; })) {
         sourceKnown.unshift({ name: camera.source_interface || "saved", ip: camera.source_ip });
@@ -491,7 +513,7 @@
           esc(item.name + " (" + item.ip + ")") + "</option>";
       }
       const ifaceOptions = known.map(function (item) {
-        return ifaceOption(item, camera.listen_ip === item.ip);
+        return ifaceOption(item, broadcast && item.name === broadcast.name && item.ip === broadcast.ip);
       }).join("");
       const sourceOptions = '<option value="" data-name=""' + (camera.source_ip ? "" : " selected") + ">Follow the host route</option>" +
         sourceKnown.map(function (item) {
@@ -506,9 +528,12 @@
         return '<option value="' + esc(item.entity_id) + '"></option>';
       }).join("");
       const urls = camera.urls || {};
-      const addresses = urls.rtsp
+      const addressRows = [];
+      if (camera.virtual_ip && camera.listen_ip) addressRows.push(["Address", camera.listen_ip]);
+      if (urls.rtsp) addressRows.push(["RTSP", urls.rtsp], ["ONVIF", urls.onvif]);
+      const addresses = addressRows.length
         ? '<section class="card"><h2>Addresses</h2><p class="hint">These stay the same when the picture source changes.</p>' +
-          copyList([["RTSP", urls.rtsp], ["ONVIF", urls.onvif]]) + "</section>"
+          copyList(addressRows) + "</section>"
         : "";
       main.innerHTML =
         pageHead(id ? "Edit camera" : "Add camera", "") +
@@ -524,9 +549,9 @@
         '<label class="field">Reach the camera from<select name="source_iface">' + sourceOptions + "</select></label>" +
         "<p class=\"hint\">RTSP and remote images open from this address. Follow the host route when the host already has a path to the camera. Home Assistant camera entities are fetched by Home Assistant.</p>" +
         '<h3 class="fixed-title">Broadcast network</h3>' +
-        '<div class="fields two"><label class="field">Publish the stream on<select name="iface">' + ifaceOptions + "</select></label>" +
-        '<label class="field">Broadcast address<input name="listen_ip" required value="' + esc(camera.listen_ip) + '"></label></div>' +
-        "<p class=\"hint\">ONVIF discovery and the RTSP address clients use stay on this network.</p></section>" +
+        '<label class="field">Publish the stream on<select name="iface">' + ifaceOptions + "</select></label>" +
+        '<input type="hidden" name="listen_ip" value="' + esc(broadcastValue) + '">' +
+        '<p class="hint" data-assigned>' + esc(assignedText) + "</p></section>" +
         '<section class="card"><h2>ONVIF access</h2><div class="fields two"><label class="field">Username<input name="username" value="' + esc(camera.username || "") + '" autocomplete="off"></label>' +
         '<label class="field">Password<input name="password" type="password" value="' + esc(camera.password || "") + '" autocomplete="off"></label></div>' +
         "<p class=\"hint\">Leave both empty for an open lab device. When set, stream and profile calls require a UsernameToken or HTTP Digest. Time and capabilities stay open.</p></section>" +
@@ -548,11 +573,29 @@
         "</div></form>";
 
       const form = document.getElementById("camera-form");
+      const assignedInterface = camera.virtual_ip ? camera.interface : "";
+      const assignedListen = camera.virtual_ip ? camera.listen_ip : "";
       form.iface.addEventListener("change", function () {
         const selected = form.iface.selectedOptions[0];
-        form.listen_ip.value = selected.value;
-        camera.interface = selected.getAttribute("data-name") || "";
-        camera.listen_ip = selected.value;
+        const name = selected.getAttribute("data-name") || "";
+        const note = form.querySelector("[data-assigned]");
+        if (selected.value === "127.0.0.1") {
+          form.listen_ip.value = "127.0.0.1";
+          camera.virtual_ip = false;
+          camera.listen_ip = "127.0.0.1";
+          note.textContent = "Loopback publishes only on this machine.";
+        } else if (assignedInterface === name && assignedListen) {
+          form.listen_ip.value = assignedListen;
+          camera.virtual_ip = true;
+          camera.listen_ip = assignedListen;
+          note.textContent = "Assigned address " + assignedListen + ". ONVIF clients use http://" + assignedListen + "/onvif/device_service.";
+        } else {
+          form.listen_ip.value = "";
+          camera.virtual_ip = false;
+          camera.listen_ip = "";
+          note.textContent = "A free address on this network is reserved when you save. ONVIF clients use http://that-address/onvif/device_service.";
+        }
+        camera.interface = name;
       });
       form.source_iface.addEventListener("change", function () {
         const selected = form.source_iface.selectedOptions[0];
@@ -678,7 +721,7 @@
       '<p class="hint">' + esc(statusDetail(camera)) + "</p></div></div>" +
       '<p class="eyebrow">Networks</p>' + factList([
         ["Listening", camera.source_ip ? (camera.source_interface ? camera.source_interface + " (" + camera.source_ip + ")" : camera.source_ip) : "Follow the host route"],
-        ["Broadcast", camera.interface ? camera.interface + " (" + camera.listen_ip + ")" : camera.listen_ip],
+        ["Broadcast", camera.virtual_ip ? camera.listen_ip : (camera.interface ? camera.interface + " (" + camera.listen_ip + ")" : camera.listen_ip)],
       ]) +
       '<p class="eyebrow">ONVIF profile</p><h3>main</h3>' + factList(profileFacts(camera).concat(publishedFacts(camera).slice(0, 5), encoderFixed(camera))) +
       (runtime.error ? '<p class="banner error" role="alert">' + esc(runtime.error) + "</p>" : "") +

@@ -8,6 +8,7 @@ import uuid
 
 from aiohttp import web
 
+from .aliases import AddressBook
 from .config import Settings, Store, load_settings
 from .discovery import DiscoveryService
 from .engine import Go2RtcEngine, find_binary
@@ -31,6 +32,8 @@ def build_app(settings: Settings | None = None) -> web.Application:
     app["ha"] = ha
     app["streams"] = streams
     app["discovery"] = DiscoveryService()
+    app["aliases"] = AddressBook(settings.data_dir / "aliases.json")
+    app["alias_sites"] = {}
     app["digest_nonce"] = uuid.uuid4().hex
     setup_routes(app)
 
@@ -71,6 +74,7 @@ async def serve(settings: Settings | None = None) -> None:
     settings = settings or load_settings()
     app = build_app(settings)
     runner = web.AppRunner(app)
+    app["runner"] = runner
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", settings.ui_port).start()
     if settings.onvif_port != settings.ui_port:

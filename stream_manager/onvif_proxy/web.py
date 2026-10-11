@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -10,9 +11,12 @@ from urllib.parse import quote, unquote, urljoin
 
 from aiohttp import web
 
+from .aliases import place_camera
 from .interfaces import list_interfaces
 from .models import camera_from_dict, camera_to_dict, endpoints_for
 from .onvif_soap import dispatch
+
+log = logging.getLogger("onvif_proxy.web")
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 _INGRESS = re.compile(r"^/[A-Za-z0-9_./-]*$")
@@ -98,7 +102,46 @@ def _public(app: web.Application, camera) -> dict:
     return data
 
 
+def _place(app: web.Application, camera, previous) -> None:
+    place_camera(camera, previous, list_interfaces(), app["aliases"])
+
+
+async def sync_alias_sites(app: web.Application) -> None:
+    runner = app.get("runner")
+    if runner is None:
+        return
+    sites: dict = app.setdefault("alias_sites", {})
+    wanted = {
+        camera.listen_ip: camera
+        for camera in app["store"].cameras
+        if camera.enabled and camera.virtual_ip and (camera.service_port or 80) == 80
+    }
+    for ip in list(sites):
+        if ip not in wanted:
+            await sites.pop(ip).stop()
+    changed = False
+    for ip, camera in wanted.items():
+        if ip in sites:
+            continue
+        site = web.TCPSite(runner, ip, 80)
+        try:
+            await site.start()
+        except OSError as exc:
+            log.warning("ONVIF port 80 on %s is unavailable: %s", ip, exc)
+            camera.service_port = app["settings"].onvif_port
+            changed = True
+            continue
+        sites[ip] = site
+    if changed:
+        app["store"].save()
+
+
 async def _resync(app: web.Application) -> None:
+    try:
+        app["aliases"].restore()
+    except ValueError as exc:
+        log.warning("could not restore camera addresses: %s", exc)
+    await sync_alias_sites(app)
     discovery_ads = []
     for camera in app["store"].cameras:
         if not camera.enabled:
@@ -174,6 +217,7 @@ async def create_camera(request: web.Request) -> web.Response:
     payload["id"] = ""
     try:
         camera = camera_from_dict(payload)
+        _place(request.app, camera, None)
     except ValueError as exc:
         return _error(str(exc))
     request.app["store"].upsert(camera)
@@ -189,6 +233,7 @@ async def update_camera(request: web.Request) -> web.Response:
     payload["id"] = current.id
     try:
         camera = camera_from_dict(payload, existing=current)
+        _place(request.app, camera, current)
     except ValueError as exc:
         return _error(str(exc))
     request.app["store"].upsert(camera)
@@ -198,6 +243,9 @@ async def update_camera(request: web.Request) -> web.Response:
 
 async def delete_camera(request: web.Request) -> web.Response:
     camera_id = request.match_info["camera_id"]
+    current = request.app["store"].get(camera_id)
+    if current and current.virtual_ip:
+        request.app["aliases"].release(current.listen_ip)
     if not request.app["store"].delete(camera_id):
         return _error("camera not found", 404)
     await _resync(request.app)
@@ -248,8 +296,22 @@ async def upload_image(request: web.Request) -> web.Response:
     return _json({"image_path": f"images/{name}"})
 
 
+def _camera_for_request(request: web.Request):
+    camera_id = request.match_info.get("camera_id")
+    if camera_id:
+        return request.app["store"].get(camera_id)
+    sockname = request.transport.get_extra_info("sockname") if request.transport else None
+    ip = sockname[0] if sockname else ""
+    if ip in {"", "0.0.0.0"}:
+        ip = request.headers.get("Host", "").split(":")[0]
+    for camera in request.app["store"].cameras:
+        if camera.enabled and camera.virtual_ip and camera.listen_ip == ip:
+            return camera
+    return None
+
+
 async def soap(request: web.Request) -> web.Response:
-    camera = request.app["store"].get(request.match_info["camera_id"])
+    camera = _camera_for_request(request)
     if camera is None or not camera.enabled:
         return web.Response(status=404, text="camera not found")
     xml = await request.text()
@@ -272,7 +334,7 @@ async def soap(request: web.Request) -> web.Response:
 
 async def snapshot(request: web.Request) -> web.Response:
     app = request.app
-    camera = app["store"].get(request.match_info["camera_id"])
+    camera = _camera_for_request(request)
     if camera is None or not camera.enabled:
         return web.Response(status=404, text="camera not found")
     runtime = app["streams"].runtime.get(camera.id) or {}
@@ -402,6 +464,9 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_get("/api/entities", entities)
     app.router.add_post("/api/images", upload_image)
     app.router.add_post("/api/dev/states", dev_states)
+    app.router.add_post("/onvif/device_service", soap)
+    app.router.add_post("/onvif/media_service", soap)
+    app.router.add_get("/onvif/snapshot.jpg", snapshot)
     app.router.add_post("/onvif/{camera_id}/device_service", soap)
     app.router.add_post("/onvif/{camera_id}/media_service", soap)
     app.router.add_get("/onvif/{camera_id}/snapshot.jpg", snapshot)

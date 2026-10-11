@@ -19,6 +19,7 @@ MULTICAST = ("239.255.255.250", 3702)
 def scope_list(name: str) -> list[str]:
     return [
         "onvif://www.onvif.org/Profile/Streaming",
+        "onvif://www.onvif.org/Profile/S",
         "onvif://www.onvif.org/type/video_encoder",
         "onvif://www.onvif.org/type/NetworkVideoTransmitter",
         "onvif://www.onvif.org/name/" + quote(name, safe=""),

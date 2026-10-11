@@ -163,18 +163,18 @@ def _media_uri(uri: str) -> str:
     )
 
 
-def _profile_xml(camera: Camera) -> str:
+def _source_configuration(camera: Camera) -> str:
     output = camera.output
-    safe = xml_escape(camera.name)
     return (
-        f'<trt:Profiles token="{PROFILE_TOKEN}" fixed="true">'
-        f"<tt:Name>{safe}</tt:Name>"
-        '<tt:VideoSourceConfiguration token="vsc_1">'
-        "<tt:Name>VideoSource</tt:Name><tt:UseCount>1</tt:UseCount>"
+        '<tt:Name>VideoSource</tt:Name><tt:UseCount>1</tt:UseCount>'
         "<tt:SourceToken>vs_1</tt:SourceToken>"
         f'<tt:Bounds x="0" y="0" width="{output.width}" height="{output.height}"/>'
-        "</tt:VideoSourceConfiguration>"
-        '<tt:VideoEncoderConfiguration token="vec_1">'
+    )
+
+
+def _encoder_configuration(camera: Camera) -> str:
+    output = camera.output
+    return (
         "<tt:Name>H264</tt:Name><tt:UseCount>1</tt:UseCount>"
         "<tt:Encoding>H264</tt:Encoding>"
         f"<tt:Resolution><tt:Width>{output.width}</tt:Width><tt:Height>{output.height}</tt:Height></tt:Resolution>"
@@ -183,7 +183,31 @@ def _profile_xml(camera: Camera) -> str:
         f"<tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>{output.bitrate_kbps}</tt:BitrateLimit></tt:RateControl>"
         f"<tt:H264><tt:GovLength>{output.gov_length}</tt:GovLength>"
         f"<tt:H264Profile>{xml_escape(output.h264_profile)}</tt:H264Profile></tt:H264>"
-        "</tt:VideoEncoderConfiguration>"
+        "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address>"
+        "<tt:Port>0</tt:Port><tt:TTL>0</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>"
+        "<tt:SessionTimeout>PT60S</tt:SessionTimeout>"
+    )
+
+
+def _named_config(operation: str, token: str, body: str) -> str:
+    return envelope(
+        f'<trt:{operation}Response><trt:Configurations token="{token}">'
+        + body
+        + f"</trt:Configurations></trt:{operation}Response>"
+    )
+
+
+def _profile_xml(camera: Camera) -> str:
+    safe = xml_escape(camera.name)
+    return (
+        f'<trt:Profiles token="{PROFILE_TOKEN}" fixed="true">'
+        f"<tt:Name>{safe}</tt:Name>"
+        '<tt:VideoSourceConfiguration token="vsc_1">'
+        + _source_configuration(camera)
+        + "</tt:VideoSourceConfiguration>"
+        '<tt:VideoEncoderConfiguration token="vec_1">'
+        + _encoder_configuration(camera)
+        + "</tt:VideoEncoderConfiguration>"
         "</trt:Profiles>"
     )
 
@@ -193,6 +217,7 @@ def _scopes(camera: Camera) -> list[tuple[str, str]]:
 
     items = [
         ("Fixed", "onvif://www.onvif.org/Profile/Streaming"),
+        ("Fixed", "onvif://www.onvif.org/Profile/S"),
         ("Fixed", "onvif://www.onvif.org/type/video_encoder"),
         ("Fixed", "onvif://www.onvif.org/type/NetworkVideoTransmitter"),
         ("Configurable", "onvif://www.onvif.org/name/" + quote(camera.name, safe="")),
@@ -290,7 +315,7 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
             "<tt:Enabled>true</tt:Enabled><tt:IPv4><tt:Enabled>true</tt:Enabled><tt:Config>"
             "<tt:Manual><tt:Address>"
             + xml_escape(camera.listen_ip)
-            + "</tt:Address><tt:PrefixLength>24</tt:PrefixLength></tt:Manual>"
+            + f"</tt:Address><tt:PrefixLength>{int(camera.prefix_length or 24)}</tt:PrefixLength></tt:Manual>"
             "<tt:DHCP>false</tt:DHCP></tt:Config></tt:IPv4></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>"
         )
     if operation == "GetProfiles":
@@ -309,6 +334,40 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
             f"<tt:Resolution><tt:Width>{output.width}</tt:Width><tt:Height>{output.height}</tt:Height></tt:Resolution>"
             "</trt:VideoSources></trt:GetVideoSourcesResponse>"
         )
+    if operation in {"GetVideoSourceConfigurations", "GetVideoSourceConfiguration"}:
+        return _named_config(operation, "vsc_1", _source_configuration(camera))
+    if operation in {"GetVideoEncoderConfigurations", "GetVideoEncoderConfiguration", "GetCompatibleVideoEncoderConfigurations"}:
+        reported = "GetVideoEncoderConfigurations" if operation == "GetCompatibleVideoEncoderConfigurations" else operation
+        return _named_config(reported, "vec_1", _encoder_configuration(camera))
+    if operation == "GetVideoEncoderConfigurationOptions":
+        return envelope(
+            "<trt:GetVideoEncoderConfigurationOptionsResponse><trt:Options>"
+            "<tt:QualityRange><tt:Min>1</tt:Min><tt:Max>1</tt:Max></tt:QualityRange>"
+            "<tt:H264>"
+            + "".join(
+                f"<tt:ResolutionsAvailable><tt:Width>{width}</tt:Width><tt:Height>{height}</tt:Height></tt:ResolutionsAvailable>"
+                for width, height in ((1920, 1080), (1280, 720), (640, 480), (640, 360))
+            )
+            + "<tt:GovLengthRange><tt:Min>1</tt:Min><tt:Max>120</tt:Max></tt:GovLengthRange>"
+            "<tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>30</tt:Max></tt:FrameRateRange>"
+            "<tt:EncodingIntervalRange><tt:Min>1</tt:Min><tt:Max>1</tt:Max></tt:EncodingIntervalRange>"
+            "<tt:H264ProfilesSupported>Baseline</tt:H264ProfilesSupported>"
+            "<tt:H264ProfilesSupported>Main</tt:H264ProfilesSupported>"
+            "<tt:H264ProfilesSupported>High</tt:H264ProfilesSupported>"
+            "</tt:H264></trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>"
+        )
+    if operation in {
+        "GetAudioSources",
+        "GetAudioOutputs",
+        "GetAudioSourceConfigurations",
+        "GetAudioEncoderConfigurations",
+        "GetAudioOutputConfigurations",
+        "GetAudioDecoderConfigurations",
+        "GetOSDs",
+        "GetMetadataConfigurations",
+        "GetVideoAnalyticsConfigurations",
+    }:
+        return envelope(f"<trt:{operation}Response/>")
     if operation == "GetStreamUri":
         return envelope("<trt:GetStreamUriResponse><trt:MediaUri>" + _media_uri(endpoints.stream) + "</trt:MediaUri></trt:GetStreamUriResponse>")
     if operation == "GetSnapshotUri":
