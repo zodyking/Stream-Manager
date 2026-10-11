@@ -817,9 +817,9 @@
       '<section class="card wide"><h2>Video output</h2>' + factList(publishedFacts(camera).slice(0, 5).concat([["ONVIF profiles", "main, sub (Profile S)"]])) +
       '<details class="disclosure"><summary>Fixed encoder settings</summary>' + factList(encoderFixed(camera)) + "</details></section>" +
       '<section class="card wide" aria-labelledby="check-title"><div class="card-head"><div><h2 id="check-title">Stream check</h2>' +
-      '<p class="help">Pulls one frame through the published stream, the same path UniFi Protect uses.</p></div>' +
+      '<p class="help">Opens the ONVIF stream UniFi Protect plays, then opens the camera\'s RTSP or RTSPS source, and reads video frames from both.</p></div>' +
       '<button type="button" class="btn-secondary" id="check-stream">Test stream</button></div>' +
-      '<div class="preview" id="preview"><span class="help">No frame yet.</span></div>' +
+      '<div id="probe-results"><p class="help">Not tested yet.</p></div>' +
       '<div id="stream-facts"></div></section>' +
       "</div>";
     document.getElementById("refresh").addEventListener("click", function () { showStatus(id); });
@@ -867,29 +867,34 @@
     return value + " B";
   }
 
-  function checkStream(camera) {
-    const preview = document.getElementById("preview");
+  function probeSummary(probe) {
+    if (!probe) return "Not tested";
+    if (!probe.ok) return probe.error || "No video arrived";
+    const size = probe.width ? probe.width + "×" + probe.height + " · " : "";
+    const slices = probe.slices > 1 ? probe.slices + " slices per frame" : "one slice per frame";
+    return (probe.codec || "Video") + " " + size + probe.frames + " frames · " + slices;
+  }
+
+  async function checkStream(camera) {
+    const results = document.getElementById("probe-results");
     const button = document.getElementById("check-stream");
     button.disabled = true;
     button.textContent = "Testing…";
-    preview.innerHTML = '<span class="help">Starting the source. This can take up to 15 seconds.</span>';
-    const image = new Image();
-    image.alt = "Latest frame from " + camera.name;
-    function finish() {
-      button.disabled = false;
-      button.textContent = "Test again";
-      loadStreamFacts(camera);
+    results.innerHTML = '<p class="help">Opening both streams. This can take up to 20 seconds.</p>';
+    try {
+      const info = await api("/api/cameras/" + camera.id + "/probe", { method: "POST" });
+      const slices = info.onvif && info.onvif.slices > 1;
+      results.innerHTML =
+        (slices ? '<p class="banner warn" role="status">The published stream splits each frame into ' + info.onvif.slices + " slices. UniFi Protect shows that as a smeared picture.</p>" : "") +
+        factList([["ONVIF stream", probeSummary(info.onvif)], ["Source stream", probeSummary(info.source)]]) +
+        (info.onvif && info.onvif.url ? '<p class="help mono">' + esc(info.onvif.url) + "</p>" : "") +
+        (info.source && info.source.url ? '<p class="help mono">' + esc(info.source.url) + "</p>" : "");
+    } catch (err) {
+      results.innerHTML = '<p class="banner error" role="alert">' + esc(err.message) + "</p>";
     }
-    image.onload = function () {
-      preview.innerHTML = "";
-      preview.appendChild(image);
-      finish();
-    };
-    image.onerror = function () {
-      preview.innerHTML = '<p class="banner error" role="alert">No frame came back. The source did not produce video; open Recent engine messages below or the add-on log for the reason.</p>';
-      finish();
-    };
-    image.src = rooted("/onvif/" + camera.id + "/snapshot.jpg?t=" + Date.now());
+    button.disabled = false;
+    button.textContent = "Test again";
+    loadStreamFacts(camera);
   }
 
   async function render() {

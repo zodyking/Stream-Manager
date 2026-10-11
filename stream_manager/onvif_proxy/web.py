@@ -10,7 +10,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import quote, unquote, urljoin
+from urllib.parse import quote, unquote, urljoin, urlsplit
 
 from aiohttp import web
 
@@ -18,6 +18,7 @@ from .aliases import is_wireless, place_camera
 from .interfaces import list_interfaces
 from .models import camera_from_dict, camera_to_dict, endpoints_for
 from .onvif_soap import dispatch
+from .rtsp_probe import probe as probe_rtsp
 
 log = logging.getLogger("onvif_proxy.web")
 
@@ -408,7 +409,7 @@ async def stream_check(request: web.Request) -> web.Response:
     if camera is None:
         return _error("camera not found", 404)
     engine = app["engine"]
-    lines = [line for line in engine.recent if camera.id in line or "exec" in line or "ffmpeg" in line]
+    lines = _camera_log(app, camera)
     payload = {"engine": bool(engine.running), "producers": [], "consumers": [], "log": lines[-12:]}
     session = app["ha"]._session
     if not engine.binary or session is None:
@@ -424,6 +425,39 @@ async def stream_check(request: web.Request) -> web.Response:
     payload["producers"] = [_peer(item) for item in info.get("producers") or [] if isinstance(item, dict)]
     payload["consumers"] = [_peer(item) for item in info.get("consumers") or [] if isinstance(item, dict)]
     return _json(payload)
+
+
+def _active_source(app: web.Application, camera):
+    runtime = app["streams"].runtime.get(camera.id) or {}
+    source_id = runtime.get("source_id") or camera.fallback_source_id
+    return next((item for item in camera.sources if item.id == source_id), None)
+
+
+def _camera_log(app: web.Application, camera) -> list[str]:
+    """Engine lines for this camera only, so one camera never shows another's errors."""
+    source = _active_source(app, camera)
+    host = urlsplit(source.url).hostname if source and source.url else ""
+    return [line for line in app["engine"].recent if camera.id in line or (host and host in line)][-12:]
+
+
+async def stream_probe(request: web.Request) -> web.Response:
+    """Open the published ONVIF stream and the source stream, and read real frames from each."""
+    app = request.app
+    camera = app["store"].get(request.match_info["camera_id"])
+    if camera is None:
+        return _error("camera not found", 404)
+    urls = endpoints_for(camera, app["settings"].onvif_port, app["settings"].rtsp_port)
+    onvif = await asyncio.to_thread(probe_rtsp, urls.stream, 12)
+    source = _active_source(app, camera)
+    if source and source.type in {"rtsp", "onvif"} and source.url.startswith(("rtsp://", "rtsps://")):
+        upstream = await asyncio.to_thread(probe_rtsp, source.url, 8, camera.source_ip)
+    elif source and source.type == "onvif":
+        upstream = {"ok": False, "url": "", "error": "This ONVIF source has no RTSP address to open."}
+    elif source and source.type == "image":
+        upstream = {"ok": False, "url": "", "error": "This source is a still image, so there is no RTSP or RTSPS stream to open."}
+    else:
+        upstream = {"ok": False, "url": "", "error": "The active source is not an RTSP or RTSPS stream."}
+    return _json({"onvif": onvif, "source": upstream, "log": _camera_log(app, camera)})
 
 
 async def _proxy_bytes(app: web.Application, url: str, headers: dict) -> web.Response:
@@ -531,6 +565,7 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_put("/api/cameras/{camera_id}", update_camera)
     app.router.add_delete("/api/cameras/{camera_id}", delete_camera)
     app.router.add_get("/api/cameras/{camera_id}/stream", stream_check)
+    app.router.add_post("/api/cameras/{camera_id}/probe", stream_probe)
     app.router.add_get("/api/entities", entities)
     app.router.add_post("/api/images", upload_image)
     app.router.add_post("/api/dev/states", dev_states)
