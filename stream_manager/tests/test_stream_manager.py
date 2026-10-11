@@ -112,6 +112,9 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-g 12", encoded)
         self.assertIn("-profile:v baseline", encoded)
         self.assertIn("sliced-threads=0:slices=1", encoded)
+        self.assertIn("-map 0:a:0?", encoded)
+        self.assertIn("-c:a aac", encoded)
+        self.assertIn("#audio=", published)
         self.assertIn("bitrate=512k", published)
         self.assertNotIn("#video=h264", published)
 

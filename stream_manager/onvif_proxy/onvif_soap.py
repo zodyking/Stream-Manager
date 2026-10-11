@@ -23,7 +23,7 @@ PRE_AUTH = {
 
 PROFILE_TOKEN = "main"
 SUB_TOKEN = "sub"
-FIRMWARE = "1.0.14"
+FIRMWARE = "1.0.15"
 
 
 @dataclass
@@ -191,6 +191,20 @@ def _encoder_configuration(camera: Camera) -> str:
     )
 
 
+def _audio_source_configuration() -> str:
+    return "<tt:Name>Audio</tt:Name><tt:UseCount>2</tt:UseCount><tt:SourceToken>as_1</tt:SourceToken>"
+
+
+def _audio_encoder_configuration() -> str:
+    return (
+        "<tt:Name>AAC</tt:Name><tt:UseCount>2</tt:UseCount>"
+        "<tt:Encoding>AAC</tt:Encoding><tt:Bitrate>64</tt:Bitrate><tt:SampleRate>16</tt:SampleRate>"
+        "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address>"
+        "<tt:Port>0</tt:Port><tt:TTL>0</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>"
+        "<tt:SessionTimeout>PT60S</tt:SessionTimeout>"
+    )
+
+
 def _named_config(operation: str, token: str, body: str) -> str:
     return envelope(
         f'<trt:{operation}Response><trt:Configurations token="{token}">'
@@ -210,6 +224,12 @@ def _profile_xml(camera: Camera, token: str = PROFILE_TOKEN, tag: str = "trt:Pro
         '<tt:VideoEncoderConfiguration token="vec_1">'
         + _encoder_configuration(camera)
         + "</tt:VideoEncoderConfiguration>"
+        '<tt:AudioSourceConfiguration token="asc_1">'
+        + _audio_source_configuration()
+        + "</tt:AudioSourceConfiguration>"
+        '<tt:AudioEncoderConfiguration token="aec_1">'
+        + _audio_encoder_configuration()
+        + "</tt:AudioEncoderConfiguration>"
         f"</{tag}>"
     )
 
@@ -221,6 +241,7 @@ def _scopes(camera: Camera) -> list[tuple[str, str]]:
         ("Fixed", "onvif://www.onvif.org/Profile/Streaming"),
         ("Fixed", "onvif://www.onvif.org/Profile/S"),
         ("Fixed", "onvif://www.onvif.org/type/video_encoder"),
+        ("Fixed", "onvif://www.onvif.org/type/audio_encoder"),
         ("Fixed", "onvif://www.onvif.org/type/NetworkVideoTransmitter"),
         ("Configurable", "onvif://www.onvif.org/name/" + quote(camera.name, safe="")),
         ("Configurable", "onvif://www.onvif.org/location/virtual"),
@@ -371,11 +392,16 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
             "<tt:H264ProfilesSupported>High</tt:H264ProfilesSupported>"
             "</tt:H264></trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>"
         )
+    if operation == "GetAudioSources":
+        return envelope(
+            '<trt:GetAudioSourcesResponse><trt:AudioSources token="as_1"><tt:Channels>1</tt:Channels></trt:AudioSources></trt:GetAudioSourcesResponse>'
+        )
+    if operation in {"GetAudioSourceConfigurations", "GetAudioSourceConfiguration"}:
+        return _named_config(operation, "asc_1", _audio_source_configuration())
+    if operation in {"GetAudioEncoderConfigurations", "GetAudioEncoderConfiguration"}:
+        return _named_config(operation, "aec_1", _audio_encoder_configuration())
     if operation in {
-        "GetAudioSources",
         "GetAudioOutputs",
-        "GetAudioSourceConfigurations",
-        "GetAudioEncoderConfigurations",
         "GetAudioOutputConfigurations",
         "GetAudioDecoderConfigurations",
         "GetOSDs",

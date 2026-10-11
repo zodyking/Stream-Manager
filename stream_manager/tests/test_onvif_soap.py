@@ -88,7 +88,17 @@ class OnvifSoapTests(unittest.TestCase):
         self.assertIn("<tt:Encoding>H264</tt:Encoding>", encoder_xml)
         self.assertIn("<tt:H264Profile>Main</tt:H264Profile>", encoder_xml)
         self.assertIn('token="vec_1"', encoder_xml)
-        self.assertNotIn("not implemented", build_operation("GetAudioSources", cam, ENDPOINTS, ""))
+        self.assertIn("<tt:Encoding>AAC</tt:Encoding>", profiles_xml)
+        self.assertIn('token="aec_1"', profiles_xml)
+        audio = build_operation("GetAudioSources", cam, ENDPOINTS, "")
+        self.assertIn('token="as_1"', audio)
+        self.assertNotIn("not implemented", audio)
+        audio_encoder = build_operation("GetAudioEncoderConfigurations", cam, ENDPOINTS, "")
+        self.assertIn("<tt:Encoding>AAC</tt:Encoding>", audio_encoder)
+        self.assertIn("<tt:SampleRate>16</tt:SampleRate>", audio_encoder)
+        outputs = build_operation("GetAudioOutputs", cam, ENDPOINTS, "")
+        self.assertNotIn("AAC", outputs)
+        self.assertNotIn("not implemented", outputs)
         self.assertEqual(operation_name(envelope("<tds:GetCapabilities/>")), "GetCapabilities")
 
     def test_custom_output_is_advertised(self):

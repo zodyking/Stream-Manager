@@ -364,32 +364,27 @@ async def soap(request: web.Request) -> web.Response:
     return web.Response(status=result.status, text=result.body, headers=headers)
 
 
+def published_frame_url(api_port: int, camera_id: str) -> str:
+    """JPEG of the picture clients are actually receiving, reused for a few seconds."""
+    return f"http://127.0.0.1:{api_port}/api/frame.jpeg?src={quote(camera_id)}&cache=5s"
+
+
+def _jpeg(body: bytes | None) -> bool:
+    return bool(body) and body[:2] == b"\xff\xd8"
+
+
 async def snapshot(request: web.Request) -> web.Response:
     app = request.app
     camera = _camera_for_request(request)
     if camera is None or not camera.enabled:
         return web.Response(status=404, text="camera not found")
-    runtime = app["streams"].runtime.get(camera.id) or {}
-    source_id = runtime.get("source_id")
-    source = next((item for item in camera.sources if item.id == source_id), None)
-    if source and source.type == "image" and source.image_path:
-        path = Path(source.image_path)
-        if not path.is_absolute():
-            path = app["settings"].data_dir / source.image_path
-        if path.is_file():
-            return web.FileResponse(path)
-    if source and source.type == "image" and source.image_url:
-        return await _proxy_bytes(app, source.image_url, {})
-    if source and source.type == "ha_camera":
-        url = app["ha"].api_url(f"/api/camera_proxy/{source.entity_id}")
-        return await _proxy_bytes(app, url, app["ha"].auth_headers())
-    if app["engine"].binary:
-        frame = f"http://127.0.0.1:{app['settings'].go2rtc_api_port}/api/frame.jpeg?src={quote(camera.id)}"
-        response = await _proxy_bytes(app, frame, {})
-        if response.status == 200 and not response.body:
-            return web.Response(status=503, text="the stream did not produce a frame")
+    if not app["engine"].binary:
+        return web.Response(status=503, text="snapshot is not available until the stream engine is running")
+    frame = published_frame_url(app["settings"].go2rtc_api_port, camera.id)
+    response = await _proxy_bytes(app, frame, {})
+    if response.status == 200 and _jpeg(response.body):
         return response
-    return web.Response(status=503, text="snapshot is not available for the active source")
+    return web.Response(status=503, text="the published stream did not produce a frame")
 
 
 def _peer(item: dict) -> dict:
