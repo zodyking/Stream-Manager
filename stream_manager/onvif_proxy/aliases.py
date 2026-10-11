@@ -76,6 +76,31 @@ def _default_run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, check=False, capture_output=True, text=True, timeout=5)
 
 
+def gratuitous_arp(link: str, mac: str, ip: str) -> bool:
+    """Tell the LAN that ip lives at mac, so the router's ARP cache holds the camera MAC."""
+    if not hasattr(socket, "AF_PACKET"):
+        return False
+    try:
+        hw = bytes.fromhex(mac.replace(":", ""))
+        addr = socket.inet_aton(ip)
+    except (ValueError, OSError):
+        return False
+    broadcast = b"\xff" * 6
+    frames = []
+    for op, target_hw in ((1, b"\x00" * 6), (2, broadcast)):
+        arp = struct.pack("!HHBBH", 1, 0x0800, 6, 4, op) + hw + addr + target_hw + addr
+        frames.append((broadcast + hw + b"\x08\x06" + arp).ljust(60, b"\x00"))
+    try:
+        with socket.socket(socket.AF_PACKET, socket.SOCK_RAW) as sock:
+            sock.bind((link, 0))
+            for frame in frames:
+                sock.send(frame)
+        return True
+    except OSError as exc:
+        log.debug("gratuitous ARP on %s failed: %s", link, exc)
+        return False
+
+
 def _write_sysctl(path: str, value: str) -> bool:
     try:
         Path(path).write_text(value, encoding="ascii")
@@ -87,12 +112,13 @@ def _write_sysctl(path: str, value: str) -> bool:
 class AddressBook:
     """Addresses owned by cameras, persisted so they come back after a restart."""
 
-    def __init__(self, path: Path, run=None, sysctl=None, gateway=None) -> None:
+    def __init__(self, path: Path, run=None, sysctl=None, gateway=None, announce=None) -> None:
         self.path = path
         self._managed = run is None
         self._run = run or _default_run
         self._sysctl = sysctl or _write_sysctl
         self._gateway = gateway or default_gateway
+        self._announce = announce or (gratuitous_arp if self._managed else lambda link, mac, ip: True)
         self._entries: dict[str, dict] = {}
         self.arp_mode = ""
         self._load()
@@ -200,6 +226,8 @@ class AddressBook:
         rules = self._call([ip_bin, "rule", "show"], allow=("",))
         if f"from {ip} lookup {table}" not in rules:
             self._call([ip_bin, "rule", "add", "from", ip, "lookup", table, "priority", _RULE_PRIORITY])
+        if mac:
+            self._announce(link, mac, ip)
 
     def _remove(self, ip: str, entry: dict) -> None:
         interface = str(entry.get("interface") or "")

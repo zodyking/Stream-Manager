@@ -23,7 +23,7 @@ PRE_AUTH = {
 
 PROFILE_TOKEN = "main"
 SUB_TOKEN = "sub"
-FIRMWARE = "1.0.7"
+FIRMWARE = "1.0.8"
 
 
 @dataclass
@@ -289,7 +289,7 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
         return envelope(
             "<tds:GetDeviceInformationResponse>"
             "<tds:Manufacturer>Stream Manager</tds:Manufacturer>"
-            "<tds:Model>Virtual Camera</tds:Model>"
+            f"<tds:Model>{xml_escape(camera.name or 'Virtual Camera')}</tds:Model>"
             f"<tds:FirmwareVersion>{FIRMWARE}</tds:FirmwareVersion>"
             f"<tds:SerialNumber>SM-{xml_escape(camera.id.upper())}</tds:SerialNumber>"
             f"<tds:HardwareId>{xml_escape((camera.mac or camera.id).replace(':', '').upper())}</tds:HardwareId>"

@@ -441,6 +441,18 @@ select, option { background-color: var(--surface); color: var(--text); }
 .hero-title { font-size: var(--fs-lg); font-weight: 700; }
 .status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
 .status-grid .wide { grid-column: 1 / -1; }
+.card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; }
+.preview {
+  margin: var(--sp-4) 0; min-height: 120px; border: 1px dashed var(--line); border-radius: var(--r-control);
+  display: flex; align-items: center; justify-content: center; padding: var(--sp-3); background: var(--field); text-align: center;
+}
+.preview img { display: block; max-width: 100%; max-height: 420px; border-radius: 8px; }
+.preview .banner { margin: 0; }
+.log {
+  margin: var(--sp-2) 0 0; padding: var(--sp-3); max-height: 260px; overflow: auto;
+  background: var(--field); border-radius: var(--r-control);
+  font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; color: var(--text-2);
+}
 
 /* Banners */
 .banner { padding: var(--sp-3) var(--sp-4); border-radius: var(--r-control); font-size: var(--fs-sm); border: 1px solid transparent; }

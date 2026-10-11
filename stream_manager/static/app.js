@@ -170,6 +170,10 @@
     const engineKind = engine.running ? "live" : engine.binary ? "bad" : "still";
     const engineLabel = engine.running ? "Running" : engine.binary ? "Not responding" : "Binary not found";
     const engineDetail = engine.error || (engine.running ? "Publishing the active picture on the stable RTSP URL." : "ONVIF addresses are still advertised.");
+    const arp = status.arp_isolation || "";
+    const arpBanner = arp === "unavailable"
+      ? '<p class="banner warn" role="status">This host would not let Stream Manager stop it answering for camera addresses, so UniFi Protect may see the host MAC and merge cameras. Stream Manager keeps announcing each camera MAC to work around it.</p>'
+      : "";
 
     function tile(title, kind, label, detail) {
       return '<section class="health ' + kind + '"><span class="dot ' + kind + '"></span><div class="health-copy"><span class="health-title">' + esc(title) +
@@ -206,7 +210,7 @@
       tile("Home Assistant", haKind, haLabel, haDetail) +
       tile("Discovery", discoveryKind, discoveryLabel, discoveryDetail) +
       tile("Stream engine", engineKind, engineLabel, engineDetail) +
-      "</div>" + cards;
+      "</div>" + arpBanner + cards;
   }
 
   const resolutions = [[1920, 1080], [1280, 720], [640, 480], [640, 360]];
@@ -808,8 +812,80 @@
       '<section class="card"><h2>Network</h2>' + factList(network) + "</section>" +
       '<section class="card wide"><h2>Video output</h2>' + factList(publishedFacts(camera).slice(0, 5).concat([["ONVIF profiles", "main, sub (Profile S)"]])) +
       '<details class="disclosure"><summary>Fixed encoder settings</summary>' + factList(encoderFixed(camera)) + "</details></section>" +
+      '<section class="card wide" aria-labelledby="check-title"><div class="card-head"><div><h2 id="check-title">Stream check</h2>' +
+      '<p class="help">Pulls one frame through the published stream, the same path UniFi Protect uses.</p></div>' +
+      '<button type="button" class="btn-secondary" id="check-stream">Test stream</button></div>' +
+      '<div class="preview" id="preview"><span class="help">No frame yet.</span></div>' +
+      '<div id="stream-facts"></div></section>' +
       "</div>";
     document.getElementById("refresh").addEventListener("click", function () { showStatus(id); });
+    document.getElementById("check-stream").addEventListener("click", function () { checkStream(camera); });
+    loadStreamFacts(camera);
+  }
+
+  async function loadStreamFacts(camera) {
+    const target = document.getElementById("stream-facts");
+    if (!target) return;
+    let info;
+    try {
+      info = await api("/api/cameras/" + camera.id + "/stream");
+    } catch (err) {
+      target.innerHTML = '<p class="banner error" role="alert">' + esc(err.message) + "</p>";
+      return;
+    }
+    const producer = (info.producers || [])[0];
+    const consumers = info.consumers || [];
+    let source = "Idle until a client connects";
+    if (producer && producer.bytes) {
+      source = "Receiving " + ((producer.codecs || []).join(", ").toUpperCase() || "video") + " · " + formatBytes(producer.bytes);
+    } else if (consumers.length) {
+      source = "Connecting to the source…";
+    }
+    const rows = [
+      ["Source", source],
+      ["Watching", consumers.length ? consumers.map(function (item) { return (item.remote || "local") + (item.agent ? " (" + item.agent + ")" : ""); }).join(", ") : "No clients"],
+    ];
+    target.innerHTML = factList(rows) +
+      ((info.log || []).length
+        ? '<details class="disclosure"><summary>Recent engine messages</summary><pre class="log">' + esc(unescapeLog(info.log).join("\n")) + "</pre></details>"
+        : "");
+  }
+
+  function unescapeLog(lines) {
+    return lines.map(function (line) {
+      return line.split("\\r\\n").join("\n").split("\\n").join("\n").split('\\"').join('"');
+    });
+  }
+
+  function formatBytes(value) {
+    if (value > 1048576) return (value / 1048576).toFixed(1) + " MB";
+    if (value > 1024) return Math.round(value / 1024) + " KB";
+    return value + " B";
+  }
+
+  function checkStream(camera) {
+    const preview = document.getElementById("preview");
+    const button = document.getElementById("check-stream");
+    button.disabled = true;
+    button.textContent = "Testing…";
+    preview.innerHTML = '<span class="help">Starting the source. This can take up to 15 seconds.</span>';
+    const image = new Image();
+    image.alt = "Latest frame from " + camera.name;
+    function finish() {
+      button.disabled = false;
+      button.textContent = "Test again";
+      loadStreamFacts(camera);
+    }
+    image.onload = function () {
+      preview.innerHTML = "";
+      preview.appendChild(image);
+      finish();
+    };
+    image.onerror = function () {
+      preview.innerHTML = '<p class="banner error" role="alert">No frame came back. The source did not produce video; open Recent engine messages below or the add-on log for the reason.</p>';
+      finish();
+    };
+    image.src = rooted("/onvif/" + camera.id + "/snapshot.jpg?t=" + Date.now());
   }
 
   async function render() {

@@ -15,7 +15,7 @@ from .discovery import DiscoveryService
 from .engine import Go2RtcEngine, find_binary
 from .ha_client import HaClient
 from .stream_manager import StreamManager
-from .web import _resync, setup_routes, sync_alias_sites
+from .web import _resync, migrate_addresses, setup_routes, sync_alias_sites
 
 log = logging.getLogger("onvif_proxy")
 
@@ -57,6 +57,7 @@ def build_app(settings: Settings | None = None) -> web.Application:
             asyncio.create_task(_resync(_app))
 
         ha.on_change = kick
+        await asyncio.to_thread(migrate_addresses, _app)
         await _resync(_app)
         log.info("UI http://127.0.0.1:%s", settings.ui_port)
         log.info("ONVIF http://127.0.0.1:%s/onvif/<camera>/device_service", settings.onvif_port)

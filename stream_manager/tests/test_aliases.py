@@ -76,6 +76,26 @@ class AliasTests(unittest.TestCase):
         self.assertEqual(urls.media, "http://192.168.0.249/onvif/media_service")
         self.assertEqual(urls.stream, "rtsp://192.168.0.249:8554/676d2b88f4d6")
 
+    def test_legacy_shared_address_moves_to_its_own_mac_and_is_announced(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run = Recorder()
+            announced = []
+            addresses = AddressBook(
+                Path(folder) / "aliases.json",
+                run=run,
+                sysctl=lambda path, value: True,
+                gateway=lambda iface: "192.168.0.1",
+                announce=lambda link, mac, ip: announced.append((link, mac, ip)),
+            )
+            addresses._entries["192.168.0.249"] = {"interface": "eth0", "prefix": 24, "camera_id": "cam", "link": "", "mac": ""}
+            legacy = Camera(id="cam", name="Printer", interface="eth0", listen_ip="192.168.0.249", virtual_ip=True, service_port=80)
+            camera = Camera(**{**legacy.__dict__})
+            place_camera(camera, legacy, WIRED, addresses, probe=lambda ip: True, wireless=wifi)
+            self.assertEqual(camera.listen_ip, "192.168.0.249")
+            self.assertEqual(camera.link, "smvcam")
+            self.assertIn("ip addr del 192.168.0.249/24 dev eth0", run.joined())
+            self.assertEqual(announced, [("smvcam", virtual_mac("cam"), "192.168.0.249")])
+
     def test_same_interface_keeps_the_reserved_address(self):
         with tempfile.TemporaryDirectory() as folder:
             previous = Camera(

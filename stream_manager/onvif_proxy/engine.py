@@ -7,13 +7,16 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 log = logging.getLogger("onvif_proxy.engine")
+stream_log = logging.getLogger("go2rtc")
 
 
 def find_binary(explicit: str) -> str:
@@ -49,6 +52,7 @@ class Go2RtcEngine:
         self._known: set[str] = set()
         self.templates: dict[str, str] = {}
         self._loaded: dict[str, str] = {}
+        self.recent: deque[str] = deque(maxlen=60)
 
     @property
     def base(self) -> str:
@@ -89,19 +93,17 @@ class Go2RtcEngine:
             log.warning(self.error)
             return
         config = self.write_config()
-        log_path = self.data_dir / "go2rtc.log"
-        handle = log_path.open("ab")
         try:
             self.process = subprocess.Popen(
                 [self.binary, "-config", str(config)],
-                stdout=handle,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
         except OSError as exc:
             self.error = str(exc)
             self.running = False
-            handle.close()
             return
+        threading.Thread(target=self._pump, args=(self.process,), daemon=True).start()
         self.error = ""
         self.running = True
         deadline = time.monotonic() + 5
@@ -114,6 +116,17 @@ class Go2RtcEngine:
                 return
             time.sleep(0.1)
         self.error = "The stream engine did not open in time."
+
+    def _pump(self, process: subprocess.Popen) -> None:
+        """Forward go2rtc and ffmpeg output to the add-on log."""
+        for raw in iter(process.stdout.readline, b""):
+            line = redact(raw.decode("utf-8", "replace").rstrip())
+            if not line:
+                continue
+            self.recent.append(line)
+            level = logging.WARNING if any(tag in line for tag in (" WRN ", " ERR ", " FTL ", "error", "Error")) else logging.INFO
+            stream_log.log(level, "%s", line)
+        process.stdout.close()
 
     def stop(self) -> None:
         if self.process and self.process.poll() is None:
@@ -194,6 +207,7 @@ class RecordingEngine:
         self.running = True
         self.error = ""
         self.templates: dict[str, str] = {}
+        self.recent: deque[str] = deque(maxlen=60)
 
     def start(self) -> None:
         self.running = True

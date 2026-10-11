@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -13,7 +14,7 @@ from urllib.parse import quote, unquote, urljoin
 
 from aiohttp import web
 
-from .aliases import place_camera
+from .aliases import is_wireless, place_camera
 from .interfaces import list_interfaces
 from .models import camera_from_dict, camera_to_dict, endpoints_for
 from .onvif_soap import dispatch
@@ -107,6 +108,24 @@ def _public(app: web.Application, camera) -> dict:
 
 def _place(app: web.Application, camera, previous) -> None:
     place_camera(camera, previous, list_interfaces(), app["aliases"])
+
+
+def migrate_addresses(app: web.Application) -> None:
+    """Move cameras saved before per-camera MACs onto their own macvlan, keeping the IP."""
+    changed = False
+    for camera in app["store"].cameras:
+        if not camera.virtual_ip or camera.link or not camera.interface or is_wireless(camera.interface):
+            continue
+        previous = copy.deepcopy(camera)
+        try:
+            _place(app, camera, previous)
+        except ValueError as exc:
+            log.warning("could not give %s its own MAC: %s", camera.name, exc)
+            continue
+        log.info("%s now answers on %s with MAC %s", camera.name, camera.listen_ip, camera.mac)
+        changed = True
+    if changed:
+        app["store"].save()
 
 
 async def sync_alias_sites(app: web.Application) -> None:
@@ -357,8 +376,49 @@ async def snapshot(request: web.Request) -> web.Response:
         return await _proxy_bytes(app, url, app["ha"].auth_headers())
     if app["engine"].binary:
         frame = f"http://127.0.0.1:{app['settings'].go2rtc_api_port}/api/frame.jpeg?src={quote(camera.id)}"
-        return await _proxy_bytes(app, frame, {})
+        response = await _proxy_bytes(app, frame, {})
+        if response.status == 200 and not response.body:
+            return web.Response(status=503, text="the stream did not produce a frame")
+        return response
     return web.Response(status=503, text="snapshot is not available for the active source")
+
+
+def _peer(item: dict) -> dict:
+    tracks = [track for track in (item.get("receivers") or []) + (item.get("senders") or []) if isinstance(track, dict)]
+    total = int(item.get("bytes_recv") or item.get("bytes_send") or 0) or sum(int(track.get("bytes") or 0) for track in tracks)
+    codecs = sorted({str((track.get("codec") or {}).get("codec_name") or "") for track in tracks} - {""})
+    return {
+        "remote": str(item.get("remote_addr") or "").split(" ")[0],
+        "agent": str(item.get("user_agent") or ""),
+        "kind": str(item.get("format_name") or item.get("protocol") or ""),
+        "bytes": total,
+        "codecs": codecs,
+    }
+
+
+async def stream_check(request: web.Request) -> web.Response:
+    """What go2rtc currently sees for this camera, without starting the source."""
+    app = request.app
+    camera = app["store"].get(request.match_info["camera_id"])
+    if camera is None:
+        return _error("camera not found", 404)
+    engine = app["engine"]
+    lines = [line for line in engine.recent if camera.id in line or "exec" in line or "ffmpeg" in line]
+    payload = {"engine": bool(engine.running), "producers": [], "consumers": [], "log": lines[-12:]}
+    session = app["ha"]._session
+    if not engine.binary or session is None:
+        return _json(payload)
+    url = f"http://127.0.0.1:{app['settings'].go2rtc_api_port}/api/streams?src={quote(camera.id)}"
+    try:
+        async with session.get(url) as response:
+            info = await response.json(content_type=None) if response.status == 200 else {}
+    except Exception as exc:
+        payload["error"] = str(exc)
+        return _json(payload)
+    info = info if isinstance(info, dict) else {}
+    payload["producers"] = [_peer(item) for item in info.get("producers") or [] if isinstance(item, dict)]
+    payload["consumers"] = [_peer(item) for item in info.get("consumers") or [] if isinstance(item, dict)]
+    return _json(payload)
 
 
 async def _proxy_bytes(app: web.Application, url: str, headers: dict) -> web.Response:
@@ -465,6 +525,7 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_get("/api/cameras/{camera_id}", get_camera)
     app.router.add_put("/api/cameras/{camera_id}", update_camera)
     app.router.add_delete("/api/cameras/{camera_id}", delete_camera)
+    app.router.add_get("/api/cameras/{camera_id}/stream", stream_check)
     app.router.add_get("/api/entities", entities)
     app.router.add_post("/api/images", upload_image)
     app.router.add_post("/api/dev/states", dev_states)
