@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -45,6 +46,8 @@ class Go2RtcEngine:
         self.running = False
         self.error = ""
         self._known: set[str] = set()
+        self.templates: dict[str, str] = {}
+        self._loaded: dict[str, str] = {}
 
     @property
     def base(self) -> str:
@@ -64,6 +67,10 @@ class Go2RtcEngine:
                     '  listen: ""',
                     "ffmpeg:",
                     "  bin: ffmpeg",
+                    *[
+                        f"  {name}: {json.dumps(body)}"
+                        for name, body in sorted(self.templates.items())
+                    ],
                     "log:",
                     "  level: info",
                     "streams: {}",
@@ -127,6 +134,19 @@ class Go2RtcEngine:
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             return 0, str(exc)
 
+    def ensure_templates(self, templates: dict[str, str]) -> bool:
+        """Restart go2rtc when a new ffmpeg template has to be loaded."""
+        fresh = any(self._loaded.get(key) != value for key, value in templates.items())
+        self.templates.update(templates)
+        if not fresh or not self.running:
+            return False
+        self.stop()
+        self.start()
+        if self.running:
+            self._loaded = dict(self.templates)
+            return True
+        return False
+
     def upsert(self, name: str, src: str) -> str:
         if not self.binary:
             return self.error or "engine not installed"
@@ -160,6 +180,7 @@ class RecordingEngine:
         self.binary = "recording"
         self.running = True
         self.error = ""
+        self.templates: dict[str, str] = {}
 
     def start(self) -> None:
         self.running = True
@@ -169,6 +190,10 @@ class RecordingEngine:
 
     def ping(self) -> bool:
         return True
+
+    def ensure_templates(self, templates: dict[str, str]) -> bool:
+        self.templates.update(templates)
+        return False
 
     def upsert(self, name: str, src: str) -> str:
         self.streams[name] = src

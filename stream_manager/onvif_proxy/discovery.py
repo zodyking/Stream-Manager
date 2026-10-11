@@ -90,6 +90,7 @@ class DiscoveryService:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._sockets: list[socket.socket] = []
+        self._by_sock: dict[int, list[dict]] = {}
 
     def update(self, advertisements: list[dict]) -> None:
         if advertisements == self._ads and (self._thread or not any(ad.get("ip") and not str(ad.get("ip")).startswith("127.") for ad in advertisements)):
@@ -100,8 +101,9 @@ class DiscoveryService:
     def restart(self) -> None:
         self.stop()
         self._stop = threading.Event()
-        bindings, sockets = self._bind_all()
+        bindings, sockets, by_sock = self._bind_all()
         self._sockets = sockets
+        self._by_sock = by_sock
         failures = [item for item in bindings if item.get("error") and not str(item.get("ip", "")).startswith("127.")]
         self.status = {
             "ok": not failures,
@@ -122,9 +124,10 @@ class DiscoveryService:
             except OSError:
                 pass
         self._sockets = []
+        self._by_sock = {}
         self._thread = None
 
-    def _bind_all(self) -> tuple[list[dict], list[socket.socket]]:
+    def _bind_all(self) -> tuple[list[dict], list[socket.socket], dict[int, list[dict]]]:
         groups: dict[str, list[dict]] = {}
         for ad in self._ads:
             if ad.get("discovery_mode") == "NonDiscoverable":
@@ -135,6 +138,7 @@ class DiscoveryService:
             groups.setdefault(ip, []).append(ad)
         bindings: list[dict] = []
         sockets: list[socket.socket] = []
+        by_sock: dict[int, list[dict]] = {}
         for ip, ads in groups.items():
             try:
                 sock = self._open(ip)
@@ -142,8 +146,7 @@ class DiscoveryService:
                 log.warning("discovery bind %s failed: %s", ip, exc)
                 bindings.append({"ip": ip, "cameras": len(ads), "error": str(exc)})
                 continue
-            sock_ads = ads
-            setattr(sock, "advertisements", sock_ads)
+            by_sock[id(sock)] = ads
             sockets.append(sock)
             bindings.append({"ip": ip, "cameras": len(ads), "error": None})
         if any(ad.get("ip", "").startswith("127.") for ad in self._ads):
@@ -154,7 +157,7 @@ class DiscoveryService:
                     "error": "loopback is not announced with WS-Discovery",
                 }
             )
-        return bindings, sockets
+        return bindings, sockets, by_sock
 
     def _open(self, ip: str) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -192,7 +195,7 @@ class DiscoveryService:
         if not probe_relevant(text):
             return
         relates = message_id(text)
-        for ad in getattr(sock, "advertisements", []):
+        for ad in self._by_sock.get(id(sock), []):
             scopes = ad["scopes"]
             if not scopes_match(text, scopes):
                 continue

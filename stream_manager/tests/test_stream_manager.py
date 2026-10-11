@@ -4,6 +4,7 @@ from pathlib import Path
 from onvif_proxy.engine import RecordingEngine
 from onvif_proxy.ha_client import Playback
 from onvif_proxy.models import camera_from_dict
+from onvif_proxy.discovery import DiscoveryService, scope_list
 from onvif_proxy.stream_manager import StreamManager, ffmpeg_still, with_source_bind
 
 
@@ -53,9 +54,10 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(streams.runtime["printer"]["rtsp_url"], "rtsp://192.0.2.20:8554/printer")
         published = engine.streams["printer"]
         self.assertTrue(published.startswith("ffmpeg:rtsp://camera.example/live#video="))
+        self.assertNotRegex(published, r"\s")
         self.assertIn("width=1920", published)
         self.assertIn("height=1080", published)
-        self.assertIn("-profile:v main", published)
+        self.assertIn("-profile:v main", "\n".join(engine.templates.values()))
         self.assertIn("bitrate=2048k", published)
         self.assertIn("printer", engine.streams)
 
@@ -101,11 +103,13 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
         streams, engine = manager(Path("."))
         await streams.sync([cam], {}, FakeHa(Playback(None, None)))
         published = engine.streams["door"]
+        encoded = "\n".join(engine.templates.values())
+        self.assertNotRegex(published, r"\s")
         self.assertIn("width=640", published)
         self.assertIn("height=360", published)
-        self.assertIn("-r 8", published)
-        self.assertIn("-g 12", published)
-        self.assertIn("-profile:v baseline", published)
+        self.assertIn("-r 8", encoded)
+        self.assertIn("-g 12", encoded)
+        self.assertIn("-profile:v baseline", encoded)
         self.assertIn("bitrate=512k", published)
         self.assertNotIn("#video=h264", published)
 
@@ -125,7 +129,8 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
         streams, engine = manager(Path("."))
         await streams.sync([cam], {}, FakeHa(Playback(None, None)))
         published = engine.streams["gate"]
-        self.assertIn("-localaddr 192.0.2.10 -i {input}", published)
+        self.assertIn("-localaddr 192.0.2.10 -i {input}", "\n".join(engine.templates.values()))
+        self.assertNotRegex(published, r"\s")
         self.assertTrue(published.startswith("ffmpeg:rtsp://camera.example/gate#video="))
         self.assertEqual(streams.runtime["gate"]["rtsp_url"], "rtsp://192.0.2.50:8554/gate")
 
@@ -135,9 +140,38 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
 
     def test_still_image_template(self):
         src = ffmpeg_still("C:/data/images/off.jpg")
-        self.assertIn("{input}", src)
+        self.assertNotRegex(src, r"\s")
         self.assertIn("h264", src)
         self.assertTrue(src.startswith("ffmpeg:"))
+        self.assertTrue(any("{input}" in body for body in engine_templates().values()))
+
+
+def engine_templates() -> dict[str, str]:
+    from onvif_proxy.stream_manager import ffmpeg_templates
+
+    return ffmpeg_templates()
+
+
+class DiscoveryTests(unittest.TestCase):
+    def test_probe_reply_uses_a_side_map(self):
+        sent = []
+
+        class FakeSock:
+            def sendto(self, packet, addr):
+                sent.append(packet)
+
+        service = DiscoveryService()
+        sock = FakeSock()
+        service._by_sock[id(sock)] = [
+            {
+                "endpoint_uuid": "abc",
+                "scopes": scope_list("Gate"),
+                "xaddr": "http://192.0.2.26:8080/onvif/gate/device_service",
+            }
+        ]
+        service._reply(sock, b"<d:Probe></d:Probe>", ("192.0.2.2", 3702))
+        self.assertTrue(sent)
+        self.assertIn(b"192.0.2.26", sent[0])
 
 
 if __name__ == "__main__":

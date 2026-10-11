@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -13,9 +15,24 @@ from .rules import Decision, decide, selected_source
 
 log = logging.getLogger("onvif_proxy.streams")
 
+_TEMPLATES: dict[str, str] = {}
+_INPUT_KEY = re.compile(r"#input=[^#]*")
+
+
+def ffmpeg_templates() -> dict[str, str]:
+    return dict(_TEMPLATES)
+
+
+def _template(body: str) -> str:
+    """Store ffmpeg arguments under a name. go2rtc rejects spaces in a source URL."""
+    name = "sm" + hashlib.sha1(body.encode()).hexdigest()[:10]
+    _TEMPLATES[name] = body
+    return name
+
 
 def ffmpeg_still(target: str) -> str:
-    return f'ffmpeg:{target}#input=-loop 1 -framerate 5 -i "{{input}}"#video=h264'
+    name = _template("-loop 1 -framerate 5 -i {input}")
+    return f"ffmpeg:{target}#input={name}#video=h264"
 
 
 def with_source_bind(src: str, source_ip: str) -> str:
@@ -26,18 +43,18 @@ def with_source_bind(src: str, source_ip: str) -> str:
     remote_http = target.startswith(("http://", "https://")) and "127.0.0.1" not in target and "localhost" not in target
     if not (target.startswith(("rtsp://", "rtsps://")) or remote_http):
         return src
-    for needle in ("-i {input}", '-i "{input}"'):
-        if needle in src:
-            return src.replace(needle, f"-localaddr {source_ip} {needle}", 1)
     if target.startswith(("rtsp://", "rtsps://")):
-        template = (
-            "-fflags nobuffer -flags low_delay -timeout 5000000 "
+        body = (
+            "-fflags nobuffer -flags low_delay -timeout {timeout} "
             "-user_agent go2rtc/ffmpeg -rtsp_flags prefer_tcp "
             f"-localaddr {source_ip} -i {{input}}"
         )
     else:
-        template = f"-fflags nobuffer -flags low_delay -localaddr {source_ip} -i {{input}}"
-    return src + "#input=" + template
+        body = f"-fflags nobuffer -flags low_delay -localaddr {source_ip} -i {{input}}"
+    name = _template(body)
+    if "#input=" in src:
+        return _INPUT_KEY.sub("#input=" + name, src, count=1)
+    return src + "#input=" + name
 
 
 def with_output(src: str, output: OutputSettings) -> str:
@@ -45,14 +62,14 @@ def with_output(src: str, output: OutputSettings) -> str:
     if src.endswith("#video=h264"):
         src = src[: -len("#video=h264")]
     profile = output.h264_profile.casefold()
-    suffix = (
-        "#video=-c:v libx264"
+    video = _template(
+        "-c:v libx264"
         f" -g {output.gov_length}"
         f" -r {output.framerate}"
         f" -profile:v {profile}"
         " -level:v 4.1 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p"
-        f"#width={output.width}#height={output.height}#bitrate={output.bitrate_kbps}k"
     )
+    suffix = f"#video={video}#width={output.width}#height={output.height}#bitrate={output.bitrate_kbps}k"
     if src.startswith("ffmpeg:"):
         return src + suffix
     return "ffmpeg:" + src + suffix
@@ -117,10 +134,14 @@ class StreamManager:
                     await asyncio.to_thread(self.engine.remove, camera_id)
                     self._applied.pop(camera_id, None)
                     self.runtime.pop(camera_id, None)
-            for camera in cameras:
-                await self._apply_one(camera, states, ha)
+            prepared = [await self._prepare(camera, states, ha) for camera in cameras]
+            restarted = await asyncio.to_thread(self.engine.ensure_templates, ffmpeg_templates())
+            if restarted:
+                self._applied.clear()
+            for record, src in prepared:
+                await self._commit(record, src)
 
-    async def _apply_one(self, camera: Camera, states: dict[str, str], ha) -> None:
+    async def _prepare(self, camera: Camera, states: dict[str, str], ha) -> tuple[dict, str | None]:
         decision: Decision = decide(camera, states)
         source = selected_source(camera, decision)
         urls = self.urls(camera)
@@ -141,8 +162,7 @@ class StreamManager:
         }
         if not camera.enabled or source is None:
             record["error"] = "" if decision.reason == "disabled" else "no source is available"
-            self.runtime[camera.id] = record
-            return
+            return record, None
         ha_mode = None
         ha_error = None
         if source.type == "ha_camera":
@@ -159,17 +179,27 @@ class StreamManager:
         )
         if error or not src:
             record["error"] = error or "source could not be prepared"
-            if self._applied.get(camera.id):
-                await asyncio.to_thread(self.engine.remove, camera.id)
-                self._applied.pop(camera.id, None)
-            self.runtime[camera.id] = record
-            return
+            record["_drop"] = True
+            return record, None
         src = with_source_bind(with_output(src, camera.output), camera.source_ip)
         record["producer"] = src
-        if self._applied.get(camera.id) != src:
-            engine_error = await asyncio.to_thread(self.engine.upsert, camera.id, src)
+        return record, src
+
+    async def _commit(self, record: dict, src: str | None) -> None:
+        camera_id = record["camera_id"]
+        if record.pop("_drop", False):
+            if self._applied.get(camera_id):
+                await asyncio.to_thread(self.engine.remove, camera_id)
+                self._applied.pop(camera_id, None)
+            self.runtime[camera_id] = record
+            return
+        if src is None:
+            self.runtime[camera_id] = record
+            return
+        if self._applied.get(camera_id) != src:
+            engine_error = await asyncio.to_thread(self.engine.upsert, camera_id, src)
             if engine_error:
                 record["engine_error"] = engine_error
             else:
-                self._applied[camera.id] = src
-        self.runtime[camera.id] = record
+                self._applied[camera_id] = src
+        self.runtime[camera_id] = record
