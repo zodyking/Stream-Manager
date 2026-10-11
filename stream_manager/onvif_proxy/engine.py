@@ -124,6 +124,8 @@ class Go2RtcEngine:
             if not line:
                 continue
             self.recent.append(line)
+            if "[rtsp] listen" in line and " ERR " in line:
+                self.error = f"RTSP port {self.rtsp_port} is used by another program, so no stream can play. Change rtsp_port in the add-on options."
             level = logging.WARNING if any(tag in line for tag in (" WRN ", " ERR ", " FTL ", "error", "Error")) else logging.INFO
             stream_log.log(level, "%s", line)
         process.stdout.close()

@@ -169,7 +169,11 @@
     const engine = status.engine || {};
     const engineKind = engine.running ? "live" : engine.binary ? "bad" : "still";
     const engineLabel = engine.running ? "Running" : engine.binary ? "Not responding" : "Binary not found";
-    const engineDetail = engine.error || (engine.running ? "Publishing the active picture on the stable RTSP URL." : "ONVIF addresses are still advertised.");
+    const ports = status.ports || {};
+    const moved = ports.rtsp_requested && ports.rtsp !== ports.rtsp_requested
+      ? " RTSP port " + ports.rtsp_requested + " is used by another program, so streams use " + ports.rtsp + "."
+      : "";
+    const engineDetail = engine.error || ((engine.running ? "Publishing the active picture on the stable RTSP URL." : "ONVIF addresses are still advertised.") + moved);
     const arp = status.arp_isolation || "";
     const arpBanner = arp === "unavailable"
       ? '<p class="banner warn" role="status">This host would not let Stream Manager stop it answering for camera addresses, so UniFi Protect may see the host MAC and merge cameras. Stream Manager keeps announcing each camera MAC to work around it.</p>'

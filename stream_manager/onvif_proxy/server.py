@@ -10,7 +10,7 @@ import uuid
 from aiohttp import web
 
 from .aliases import AddressBook
-from .config import Settings, Store, load_settings
+from .config import Settings, Store, load_settings, pick_port
 from .discovery import DiscoveryService
 from .engine import Go2RtcEngine, find_binary
 from .ha_client import HaClient
@@ -24,6 +24,19 @@ def build_app(settings: Settings | None = None) -> web.Application:
     settings = settings or load_settings()
     app = web.Application(client_max_size=10 * 1024 * 1024)
     binary = find_binary(settings.go2rtc_bin)
+    if binary:
+        settings.rtsp_port_requested = settings.rtsp_port
+        settings.rtsp_port = pick_port(settings.rtsp_port, (8564, 8574, 18554, 28554))
+        if settings.rtsp_port != settings.rtsp_port_requested:
+            log.warning(
+                "RTSP port %s is used by another program; publishing streams on %s instead",
+                settings.rtsp_port_requested,
+                settings.rtsp_port,
+            )
+        api_port = pick_port(settings.go2rtc_api_port, (19851, 19861, 29841), host="127.0.0.1")
+        if api_port != settings.go2rtc_api_port:
+            log.warning("go2rtc API port %s is busy; using %s", settings.go2rtc_api_port, api_port)
+            settings.go2rtc_api_port = api_port
     engine = Go2RtcEngine(binary, settings.go2rtc_api_port, settings.rtsp_port, settings.data_dir)
     ha = HaClient(settings.ha_url, settings.ha_token, settings.supervisor, settings.poll_seconds)
     streams = StreamManager(engine, settings.ui_port, settings.onvif_port, settings.rtsp_port, settings.data_dir)

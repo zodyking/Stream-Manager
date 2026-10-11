@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,28 @@ class Settings:
     supervisor: bool
     dev: bool
     go2rtc_bin: str
+    rtsp_port_requested: int = 0
+
+
+def port_free(port: int, host: str = "") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if os.name != "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def pick_port(preferred: int, fallbacks: tuple[int, ...], host: str = "", check=port_free) -> int:
+    """The first free port, so a port held by another add-on does not disable the stream engine."""
+    for port in (preferred, *fallbacks):
+        if check(port, host):
+            return port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return sock.getsockname()[1]
 
 
 def _int(value: object, default: int) -> int:

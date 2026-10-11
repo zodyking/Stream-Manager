@@ -207,7 +207,12 @@ async def status(request: web.Request) -> web.Response:
             },
             "cameras": len(app["store"].cameras),
             "dev": settings.dev,
-            "ports": {"ui": settings.ui_port, "onvif": settings.onvif_port, "rtsp": settings.rtsp_port},
+            "ports": {
+                "ui": settings.ui_port,
+                "onvif": settings.onvif_port,
+                "rtsp": settings.rtsp_port,
+                "rtsp_requested": settings.rtsp_port_requested or settings.rtsp_port,
+            },
         }
     )
 
