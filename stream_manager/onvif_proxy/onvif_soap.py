@@ -23,7 +23,7 @@ PRE_AUTH = {
 
 PROFILE_TOKEN = "main"
 SUB_TOKEN = "sub"
-FIRMWARE = "1.0.15"
+FIRMWARE = "1.0.16"
 
 
 @dataclass
@@ -198,7 +198,7 @@ def _audio_source_configuration() -> str:
 def _audio_encoder_configuration() -> str:
     return (
         "<tt:Name>AAC</tt:Name><tt:UseCount>2</tt:UseCount>"
-        "<tt:Encoding>AAC</tt:Encoding><tt:Bitrate>64</tt:Bitrate><tt:SampleRate>16</tt:SampleRate>"
+        "<tt:Encoding>AAC</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>48</tt:SampleRate>"
         "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address>"
         "<tt:Port>0</tt:Port><tt:TTL>0</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>"
         "<tt:SessionTimeout>PT60S</tt:SessionTimeout>"
@@ -213,8 +213,18 @@ def _named_config(operation: str, token: str, body: str) -> str:
     )
 
 
-def _profile_xml(camera: Camera, token: str = PROFILE_TOKEN, tag: str = "trt:Profiles") -> str:
+def _profile_xml(camera: Camera, token: str = PROFILE_TOKEN, tag: str = "trt:Profiles", *, audio: bool = False) -> str:
     label = "MainStream" if token == PROFILE_TOKEN else "SubStream"
+    audio_xml = ""
+    if audio:
+        audio_xml = (
+            '<tt:AudioSourceConfiguration token="asc_1">'
+            + _audio_source_configuration()
+            + "</tt:AudioSourceConfiguration>"
+            '<tt:AudioEncoderConfiguration token="aec_1">'
+            + _audio_encoder_configuration()
+            + "</tt:AudioEncoderConfiguration>"
+        )
     return (
         f'<{tag} token="{token}" fixed="true">'
         f"<tt:Name>{label}</tt:Name>"
@@ -224,24 +234,23 @@ def _profile_xml(camera: Camera, token: str = PROFILE_TOKEN, tag: str = "trt:Pro
         '<tt:VideoEncoderConfiguration token="vec_1">'
         + _encoder_configuration(camera)
         + "</tt:VideoEncoderConfiguration>"
-        '<tt:AudioSourceConfiguration token="asc_1">'
-        + _audio_source_configuration()
-        + "</tt:AudioSourceConfiguration>"
-        '<tt:AudioEncoderConfiguration token="aec_1">'
-        + _audio_encoder_configuration()
-        + "</tt:AudioEncoderConfiguration>"
-        f"</{tag}>"
+        + audio_xml
+        + f"</{tag}>"
     )
 
 
-def _scopes(camera: Camera) -> list[tuple[str, str]]:
+def _scopes(camera: Camera, *, audio: bool = False) -> list[tuple[str, str]]:
     from urllib.parse import quote
 
     items = [
         ("Fixed", "onvif://www.onvif.org/Profile/Streaming"),
         ("Fixed", "onvif://www.onvif.org/Profile/S"),
         ("Fixed", "onvif://www.onvif.org/type/video_encoder"),
-        ("Fixed", "onvif://www.onvif.org/type/audio_encoder"),
+        *(
+            [("Fixed", "onvif://www.onvif.org/type/audio_encoder")]
+            if audio
+            else []
+        ),
         ("Fixed", "onvif://www.onvif.org/type/NetworkVideoTransmitter"),
         ("Configurable", "onvif://www.onvif.org/name/" + quote(camera.name, safe="")),
         ("Configurable", "onvif://www.onvif.org/location/virtual"),
@@ -251,7 +260,7 @@ def _scopes(camera: Camera) -> list[tuple[str, str]]:
     return items
 
 
-def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: str) -> str:
+def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: str, *, audio: bool = False) -> str:
     if operation == "GetSystemDateAndTime":
         now = datetime.now(timezone.utc)
         stamp = (
@@ -318,7 +327,7 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
         )
     if operation == "GetScopes":
         chunks = []
-        for definition, item in _scopes(camera):
+        for definition, item in _scopes(camera, audio=audio):
             chunks.append(
                 "<tds:Scopes><tt:ScopeDef>"
                 + definition
@@ -355,13 +364,13 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
     if operation == "GetProfiles":
         return envelope(
             "<trt:GetProfilesResponse>"
-            + _profile_xml(camera, PROFILE_TOKEN)
-            + _profile_xml(camera, SUB_TOKEN)
+            + _profile_xml(camera, PROFILE_TOKEN, audio=audio)
+            + _profile_xml(camera, SUB_TOKEN, audio=audio)
             + "</trt:GetProfilesResponse>"
         )
     if operation == "GetProfile":
         token = SUB_TOKEN if _text(xml, "ProfileToken") == SUB_TOKEN else PROFILE_TOKEN
-        return envelope("<trt:GetProfileResponse>" + _profile_xml(camera, token, "trt:Profile") + "</trt:GetProfileResponse>")
+        return envelope("<trt:GetProfileResponse>" + _profile_xml(camera, token, "trt:Profile", audio=audio) + "</trt:GetProfileResponse>")
     if operation == "GetVideoSources":
         output = camera.output
         return envelope(
@@ -393,12 +402,18 @@ def build_operation(operation: str, camera: Camera, endpoints: Endpoints, xml: s
             "</tt:H264></trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>"
         )
     if operation == "GetAudioSources":
+        if not audio:
+            return envelope("<trt:GetAudioSourcesResponse/>")
         return envelope(
-            '<trt:GetAudioSourcesResponse><trt:AudioSources token="as_1"><tt:Channels>1</tt:Channels></trt:AudioSources></trt:GetAudioSourcesResponse>'
+            '<trt:GetAudioSourcesResponse><trt:AudioSources token="as_1"><tt:Channels>2</tt:Channels></trt:AudioSources></trt:GetAudioSourcesResponse>'
         )
     if operation in {"GetAudioSourceConfigurations", "GetAudioSourceConfiguration"}:
+        if not audio:
+            return envelope(f"<trt:{operation}Response/>")
         return _named_config(operation, "asc_1", _audio_source_configuration())
     if operation in {"GetAudioEncoderConfigurations", "GetAudioEncoderConfiguration"}:
+        if not audio:
+            return envelope(f"<trt:{operation}Response/>")
         return _named_config(operation, "aec_1", _audio_encoder_configuration())
     if operation in {
         "GetAudioOutputs",
@@ -442,6 +457,7 @@ def dispatch(
     method: str,
     authorization: str,
     nonce: str,
+    audio: bool = False,
 ) -> SoapResult:
     try:
         operation = operation_name(xml)
@@ -458,4 +474,4 @@ def dispatch(
                     f'opaque="{uuid.uuid4().hex}"'
                 )
                 return SoapResult(401, fault("not authorized", "ter:NotAuthorized"), challenge)
-    return SoapResult(200, build_operation(operation, camera, endpoints, xml))
+    return SoapResult(200, build_operation(operation, camera, endpoints, xml, audio=audio))

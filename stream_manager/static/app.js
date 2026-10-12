@@ -226,7 +226,7 @@
     ["Encoding", "H264"],
     ["H.264 level", "4.1"],
     ["Pixel format", "yuv420p"],
-    ["Audio", "AAC when the source has sound"],
+    ["Audio", "AAC when an uploaded video has sound"],
     ["Transport", "RTP/RTSP/TCP"],
     ["Multicast", "Off"],
     ["Encoder", "libx264, superfast, zerolatency"],
@@ -628,7 +628,7 @@
         '<div class="fields"><label class="field">Fetch sources from<select name="source_iface">' + sourceOptions + "</select></label>" +
         '<p class="help">Only needed when the source camera sits on another network than the one above. Home Assistant camera entities are always fetched through Home Assistant.</p></div></details>');
 
-      const video = formSection("4", "sec-video", "Video output", "What ONVIF clients receive. Protect works best with H.264 Main, 2 second keyframes and 2,000–4,000 kbps. Sound is included as AAC when the source has it.",
+      const video = formSection("4", "sec-video", "Video output", "What ONVIF clients receive. Protect works best with H.264 Main, 2 second keyframes and 2,000–4,000 kbps. An uploaded video keeps its sound as AAC. A GIF or a silent clip stays picture only.",
         outputFields(camera));
 
       const automation = formSection("5", "sec-automation", "Automatic switching", "Rotate the sources on a timer, or switch when a Home Assistant entity changes.",

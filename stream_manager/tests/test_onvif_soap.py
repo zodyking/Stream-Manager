@@ -88,14 +88,26 @@ class OnvifSoapTests(unittest.TestCase):
         self.assertIn("<tt:Encoding>H264</tt:Encoding>", encoder_xml)
         self.assertIn("<tt:H264Profile>Main</tt:H264Profile>", encoder_xml)
         self.assertIn('token="vec_1"', encoder_xml)
+        silent_audio = build_operation("GetAudioSources", cam, ENDPOINTS, "")
+        self.assertNotIn("AAC", build_operation("GetProfiles", cam, ENDPOINTS, envelope("<trt:GetProfiles/>")))
+        self.assertNotIn("not implemented", silent_audio)
+        self.assertNotIn("as_1", silent_audio)
+        profiles_xml = build_operation(
+            "GetProfiles",
+            cam,
+            ENDPOINTS,
+            envelope("<trt:GetProfiles/>"),
+            audio=True,
+        )
         self.assertIn("<tt:Encoding>AAC</tt:Encoding>", profiles_xml)
         self.assertIn('token="aec_1"', profiles_xml)
-        audio = build_operation("GetAudioSources", cam, ENDPOINTS, "")
+        audio = build_operation("GetAudioSources", cam, ENDPOINTS, "", audio=True)
         self.assertIn('token="as_1"', audio)
+        self.assertIn("<tt:Channels>2</tt:Channels>", audio)
         self.assertNotIn("not implemented", audio)
-        audio_encoder = build_operation("GetAudioEncoderConfigurations", cam, ENDPOINTS, "")
+        audio_encoder = build_operation("GetAudioEncoderConfigurations", cam, ENDPOINTS, "", audio=True)
         self.assertIn("<tt:Encoding>AAC</tt:Encoding>", audio_encoder)
-        self.assertIn("<tt:SampleRate>16</tt:SampleRate>", audio_encoder)
+        self.assertIn("<tt:SampleRate>48</tt:SampleRate>", audio_encoder)
         outputs = build_operation("GetAudioOutputs", cam, ENDPOINTS, "")
         self.assertNotIn("AAC", outputs)
         self.assertNotIn("not implemented", outputs)

@@ -5,8 +5,8 @@ from pathlib import Path
 from onvif_proxy.engine import Go2RtcEngine, RecordingEngine, producer_pids, source_needle
 from onvif_proxy.ha_client import Playback
 from onvif_proxy.discovery import DiscoveryService, scope_list
-from onvif_proxy.models import Source, camera_from_dict
-from onvif_proxy.stream_manager import StreamManager, ffmpeg_still, ffmpeg_templates, producer_for, with_source_bind
+from onvif_proxy.models import OutputSettings, Source, camera_from_dict
+from onvif_proxy.stream_manager import StreamManager, ffmpeg_still, ffmpeg_templates, producer_for, source_has_audio, with_output, with_source_bind
 
 
 class FakeHa:
@@ -112,9 +112,8 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-g 12", encoded)
         self.assertIn("-profile:v baseline", encoded)
         self.assertIn("sliced-threads=0:slices=1", encoded)
-        self.assertIn("-map 0:a:0?", encoded)
-        self.assertIn("-c:a aac", encoded)
-        self.assertIn("#audio=", published)
+        self.assertNotIn("-map 0:a", encoded)
+        self.assertNotIn("#audio=", published)
         self.assertIn("bitrate=512k", published)
         self.assertNotIn("#video=h264", published)
 
@@ -183,6 +182,19 @@ class StreamManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(error)
         self.assertTrue(src.startswith("ffmpeg:"))
         self.assertTrue(any("stream_loop -1 -re" in body for body in ffmpeg_templates().values()))
+
+    def test_audio_is_added_only_for_a_file_that_has_sound(self):
+        silent = with_output("ffmpeg:rtsp://camera.example/live", OutputSettings())
+        loud = with_output("ffmpeg:rtsp://camera.example/live", OutputSettings(), audio=True)
+        self.assertNotIn("#audio=", silent)
+        self.assertIn("#audio=", loud)
+        self.assertNotRegex(loud, r"\s")
+        encoded = "\n".join(ffmpeg_templates().values())
+        self.assertIn("-c:a aac", encoded)
+        self.assertIn("-ar 48000", encoded)
+        self.assertNotIn("-map 0:a", encoded)
+        self.assertFalse(source_has_audio(Source(id="clip", type="media", name="Clip", image_path="missing.mp4"), Path(".")))
+        self.assertFalse(source_has_audio(Source(id="cam", type="rtsp", name="Cam", url="rtsp://camera.example/live"), Path(".")))
 
     def test_still_image_template(self):
         src = ffmpeg_still("C:/data/images/off.jpg")

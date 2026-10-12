@@ -348,6 +348,7 @@ async def soap(request: web.Request) -> web.Response:
         return web.Response(status=404, text="camera not found")
     xml = await request.text()
     endpoints = endpoints_for(camera, request.app["settings"].onvif_port, request.app["settings"].rtsp_port)
+    runtime = request.app["streams"].runtime.get(camera.id, {})
     result = dispatch(
         xml,
         camera,
@@ -355,6 +356,7 @@ async def soap(request: web.Request) -> web.Response:
         method=request.method,
         authorization=request.headers.get("Authorization", ""),
         nonce=request.app["digest_nonce"],
+        audio=bool(runtime.get("has_audio")),
     )
     if result.status == 200:
         request.app["store"].save()

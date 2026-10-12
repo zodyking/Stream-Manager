@@ -330,7 +330,7 @@ FIXED_OUTPUT = (
     ("Encoding", "H264"),
     ("H.264 level", "4.1"),
     ("Pixel format", "yuv420p"),
-    ("Audio", "AAC when the source has sound"),
+    ("Audio", "AAC when an uploaded video has sound"),
     ("Transport", "RTP/RTSP/TCP"),
     ("Multicast", "Off"),
     ("Encoder", "libx264, superfast, zerolatency"),

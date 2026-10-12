@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import logging
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -17,6 +19,7 @@ from .rules import Decision, cycle_decision, decide, selected_source
 log = logging.getLogger("onvif_proxy.streams")
 
 _TEMPLATES: dict[str, str] = {}
+_AUDIO_CACHE: dict[str, bool] = {}
 _INPUT_KEY = re.compile(r"#input=[^#]*")
 
 
@@ -64,24 +67,76 @@ def with_source_bind(src: str, source_ip: str) -> str:
     return src + "#input=" + name
 
 
-def with_output(src: str, output: OutputSettings) -> str:
-    """Encode the published stream to the ONVIF profile instead of passing the source through."""
+def with_output(src: str, output: OutputSettings, *, audio: bool = False) -> str:
+    """Encode the published stream to the ONVIF profile instead of passing the source through.
+
+    Audio is a separate encoder and is added only when the source already has a
+    sound track. Mapping a missing track, or advertising one that is not in the
+    stream, makes a looping video or GIF sit on the first frame.
+    """
     if src.endswith("#video=h264"):
         src = src[: -len("#video=h264")]
     profile = output.h264_profile.casefold()
     video = _template(
-        "-map 0:v:0 -map 0:a:0? -c:v libx264"
+        "-c:v libx264"
         f" -g {output.gov_length}"
         f" -r {output.framerate}"
         f" -profile:v {profile}"
         " -level:v 4.1 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p"
         " -bf 0 -x264-params sliced-threads=0:slices=1:repeat-headers=1:scenecut=0"
     )
-    audio = _template("-c:a aac -b:a 64k -ac 1 -ar 16000")
-    suffix = f"#video={video}#audio={audio}#width={output.width}#height={output.height}#bitrate={output.bitrate_kbps}k"
+    suffix = f"#video={video}#width={output.width}#height={output.height}#bitrate={output.bitrate_kbps}k"
+    if audio:
+        suffix += "#audio=" + _template("-c:a aac -b:a 128k -ac 2 -ar 48000")
     if src.startswith("ffmpeg:"):
         return src + suffix
     return "ffmpeg:" + src + suffix
+
+
+def _media_path(source: Source, data_dir: Path) -> Path | None:
+    if source.type != "media" or not source.image_path:
+        return None
+    path = Path(source.image_path)
+    if not path.is_absolute():
+        path = data_dir / source.image_path
+    return path
+
+
+def source_has_audio(source: Source, data_dir: Path) -> bool:
+    """True when an uploaded video file contains an audio stream."""
+    path = _media_path(source, data_dir)
+    if path is None or not path.is_file():
+        return False
+    key = f"{path}:{path.stat().st_mtime_ns}"
+    cached = _AUDIO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    binary = shutil.which("ffprobe")
+    found = False
+    if binary:
+        try:
+            result = subprocess.run(
+                [
+                    binary,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=codec_type",
+                    "-of",
+                    "csv=p=0",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            found = "audio" in (result.stdout or "")
+        except (OSError, subprocess.TimeoutExpired):
+            found = False
+    _AUDIO_CACHE[key] = found
+    return found
 
 
 def onvif_source_url(source: Source) -> str:
@@ -108,10 +163,8 @@ def producer_for(source: Source, *, data_dir: Path, ui_port: int, ha_mode: str |
             return ffmpeg_still(path.as_posix()), None
         return ffmpeg_still(source.image_url), None
     if source.type == "media":
-        path = Path(source.image_path)
-        if not path.is_absolute():
-            path = data_dir / source.image_path
-        if not path.is_file():
+        path = _media_path(source, data_dir)
+        if path is None or not path.is_file():
             return None, "the video or GIF file is missing"
         return ffmpeg_media(path.as_posix()), None
     if source.type == "ha_camera":
@@ -201,7 +254,9 @@ class StreamManager:
             record["error"] = error or "source could not be prepared"
             record["_drop"] = True
             return record, None
-        src = with_source_bind(with_output(src, camera.output), camera.source_ip)
+        audio = source_has_audio(source, self.data_dir)
+        record["has_audio"] = audio
+        src = with_source_bind(with_output(src, camera.output, audio=audio), camera.source_ip)
         record["producer"] = src
         return record, src
 
