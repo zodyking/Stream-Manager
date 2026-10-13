@@ -17,6 +17,7 @@ from .compositor import (
     canvas_video_args,
     compositor_input,
     helper_stream_name,
+    layers_for,
 )
 from .engine import Go2RtcEngine
 from .models import Camera, Endpoints, OutputSettings, Source, endpoints_for
@@ -222,20 +223,20 @@ class StreamManager:
     def close(self) -> list[str]:
         return self.canvas.drop_all()
 
-    def _canvas_source(self, camera: Camera) -> str:
+    def _canvas_source(self, camera: Camera, source_id: str) -> str:
         video = _template(canvas_video_args(camera.output))
-        incoming = _template(compositor_input(camera))
+        incoming = _template(compositor_input(camera, source_id))
         return f"ffmpeg:canvas#input={incoming}#video={video}"
 
-    async def _prepare_canvas(self, camera: Camera, ha) -> tuple[dict, str | None]:
+    async def _prepare_canvas(self, camera: Camera, ha, decision: Decision, source) -> tuple[dict, str | None]:
         urls = self.urls(camera)
         record = {
             "camera_id": camera.id,
             "enabled": camera.enabled,
-            "reason": "canvas",
-            "rule_id": None,
-            "source_id": "",
-            "source_name": "Designed picture",
+            "reason": decision.reason,
+            "rule_id": decision.rule_id,
+            "source_id": decision.source_id,
+            "source_name": source.name if source else "",
             "source_type": "canvas",
             "source_kind": "canvas",
             "rtsp_url": urls.stream,
@@ -254,7 +255,8 @@ class StreamManager:
         ha_modes: dict[str, str | None] = {}
         helpers: dict[str, str] = {}
         helper_names: set[str] = set()
-        for layer in camera.layers:
+        layout_id = decision.source_id or ""
+        for layer in layers_for(camera, layout_id):
             if layer.type != "source":
                 continue
             source = camera.source_map().get(layer.source_id)
@@ -282,23 +284,23 @@ class StreamManager:
                     record["error"] = error
         for helper in self.canvas.note_helpers(camera.id, helper_names):
             await asyncio.to_thread(self.engine.remove, helper)
-        self.canvas.sync_camera(camera, ha_modes=ha_modes, helpers=helpers)
+        self.canvas.sync_camera(camera, ha_modes=ha_modes, helpers=helpers, source_id=layout_id)
         record["tiles"] = self.canvas.modes(camera.id)
-        src = self._canvas_source(camera)
+        src = self._canvas_source(camera, layout_id)
         record["producer"] = src
         return record, src
 
     async def _prepare(self, camera: Camera, states: dict[str, str], ha) -> tuple[dict, str | None]:
-        if camera.layers:
-            return await self._prepare_canvas(camera, ha)
-        for helper in self.canvas.drop(camera.id):
-            await asyncio.to_thread(self.engine.remove, helper)
         decision: Decision = decide(camera, states)
         if decision.reason in {"fallback", "no_source"}:
             cycled = cycle_decision(camera, time.monotonic())
             if cycled is not None:
                 decision = cycled
         source = selected_source(camera, decision)
+        if camera.enabled and source is not None and layers_for(camera, source.id):
+            return await self._prepare_canvas(camera, ha, decision, source)
+        for helper in self.canvas.drop(camera.id):
+            await asyncio.to_thread(self.engine.remove, helper)
         urls = self.urls(camera)
         record = {
             "camera_id": camera.id,

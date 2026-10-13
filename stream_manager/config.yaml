@@ -1,5 +1,5 @@
 name: Stream Manager
-version: "1.0.17"
+version: "1.0.18"
 slug: stream_manager
 description: >-
   Smart ONVIF proxy for Home Assistant. Publish cameras, RTSP URLs, and

@@ -518,7 +518,9 @@ main > .banner { margin-bottom: var(--sp-4); }
   .btn, .btn-secondary, .btn-ghost, .tool, .copy-btn, .nav-link { transition: background 120ms ease, color 120ms ease; }
 }
 
-.designer-tools { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.designer-tools, .token-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.token-row { margin-top: var(--sp-2); }
+.token-row .btn-ghost { min-height: 44px; }
 .designer-tools .btn-secondary { min-height: 44px; }
 .stage-wrap { margin-top: var(--sp-4); }
 .stage {

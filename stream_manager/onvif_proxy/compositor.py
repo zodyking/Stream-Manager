@@ -150,10 +150,26 @@ def _text_xy(layer: Layer, output: OutputSettings) -> tuple[str, str]:
     return xpos, ypos
 
 
-def _filter_steps(camera: Camera) -> list[str]:
+def layers_for(camera: Camera, source_id: str | None = None) -> list[Layer]:
+    """Layers that belong to one switch. An omitted id uses the fallback source."""
+    chosen = camera.fallback_source_id if source_id is None else source_id
+    return [layer for layer in camera.layers if layer.layout_source == chosen]
+
+
+def resolve_text(text: str, camera: Camera, source_id: str) -> str:
+    """Fill `{name}` and `{camera}` before the label is escaped for drawtext."""
+    source = camera.source_map().get(source_id)
+    name = source.name if source else ""
+    rendered = (text or "").replace("{name}", name).replace("{source}", name).replace("{camera}", camera.name)
+    rendered = rendered.replace("\n", " ").strip()
+    return rendered or " "
+
+
+def _filter_steps(camera: Camera, source_id: str | None = None) -> list[str]:
     """Filter bodies in paint order. `{src}` and `{dst}` are filled by the caller."""
     output = camera.output
-    ordered = sorted(camera.layers, key=lambda layer: (layer.z, layer.id))
+    ordered = sorted(layers_for(camera, source_id), key=lambda layer: (layer.z, layer.id))
+    layout_id = camera.fallback_source_id if source_id is None else source_id
     steps: list[str] = []
     source_input = 1
     font = filter_path(font_file())
@@ -175,7 +191,7 @@ def _filter_steps(camera: Camera) -> list[str]:
             xpos, ypos = _text_xy(layer, output)
             steps.append(
                 "[{src}]drawtext="
-                f"fontfile={font}:text='{escape_drawtext(layer.text or ' ')}':fontsize={layer.font_size}:"
+                f"fontfile={font}:text='{escape_drawtext(resolve_text(layer.text, camera, layout_id))}':fontsize={layer.font_size}:"
                 f"fontcolor={ffmpeg_color(layer.color)}:x={xpos}:y={ypos}"
                 "[{dst}]"
             )
@@ -192,10 +208,10 @@ def _filter_steps(camera: Camera) -> list[str]:
     return steps
 
 
-def compositor_input(camera: Camera) -> str:
+def compositor_input(camera: Camera, source_id: str | None = None) -> str:
     """ffmpeg arguments up to the mapped canvas. No source addresses."""
     output = camera.output
-    ordered = sorted(camera.layers, key=lambda layer: (layer.z, layer.id))
+    ordered = sorted(layers_for(camera, source_id), key=lambda layer: (layer.z, layer.id))
     sources = [layer for layer in ordered if layer.type == "source"]
     taken: set[int] = set()
     ports: list[int] = []
@@ -209,7 +225,7 @@ def compositor_input(camera: Camera) -> str:
             "-thread_queue_size 64 -fflags nobuffer -flags low_delay -probesize 32768 -analyzeduration 0 "
             f"-f mpegts -i udp://127.0.0.1:{port}?fifo_size=1000000&overrun_nonfatal=1"
         )
-    steps = _filter_steps(camera)
+    steps = _filter_steps(camera, source_id)
     graph = ["[0:v]format=yuv420p[b0]"]
     label = "b0"
     if not steps:
@@ -464,17 +480,19 @@ class CanvasBoard:
         *,
         ha_modes: dict[str, str | None],
         helpers: dict[str, str],
+        source_id: str,
     ) -> None:
         """helpers maps layer id to an RTSP url go2rtc is already publishing for ONVIF sources."""
         ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
         output = camera.output
-        wanted = {layer.id for layer in camera.layers if layer.type == "source"}
+        layers = layers_for(camera, source_id)
+        wanted = {layer.id for layer in layers if layer.type == "source"}
         with self._lock:
             stale = [key for key in self._keepers if key[0] == camera.id and key[1] not in wanted]
             for key in stale:
                 self._keepers.pop(key).stop()
         taken: set[int] = set()
-        for layer in camera.layers:
+        for layer in layers:
             if layer.type != "source":
                 continue
             port = slot_port(camera.id, layer.id, taken)

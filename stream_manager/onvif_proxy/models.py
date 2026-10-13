@@ -76,6 +76,7 @@ class Layer:
     h: float = 0.3
     z: int = 0
     source_id: str = ""
+    layout_source: str = ""
     text: str = ""
     font_size: int = 32
     color: str = "#ECF8FD"
@@ -293,6 +294,9 @@ def layer_from_dict(raw: dict, source_ids: set[str]) -> Layer:
     if len(text) > 80:
         raise ValueError("overlay text must be 80 characters or less")
     source_id = str(raw.get("source_id") or "").strip()
+    layout_source = str(raw.get("layout_source") or "").strip()
+    if layout_source and layout_source not in source_ids:
+        raise ValueError("a layout must belong to one of the camera's sources")
     if kind == "source":
         if source_id not in source_ids:
             raise ValueError("a source tile must use one of the camera's sources")
@@ -311,6 +315,7 @@ def layer_from_dict(raw: dict, source_ids: set[str]) -> Layer:
         h=height,
         z=_bounded_int(raw.get("z"), 0, 0, 99, "layer order"),
         source_id=source_id,
+        layout_source=layout_source,
         text=text,
         font_size=_bounded_int(raw.get("font_size"), 32, 12, 160, "font size"),
         color=_color(raw.get("color"), "#ECF8FD"),
@@ -384,7 +389,15 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
     if fallback not in seen:
         raise ValueError("choose a fallback source")
     layers = [layer_from_dict(item, seen) for item in raw.get("layers") or []]
-    if sum(1 for layer in layers if layer.type == "source") > MAX_SOURCE_LAYERS:
+    for layer in layers:
+        if not layer.layout_source:
+            layer.layout_source = fallback
+    counts: dict[str, int] = {}
+    for layer in layers:
+        if layer.type != "source":
+            continue
+        counts[layer.layout_source] = counts.get(layer.layout_source, 0) + 1
+    if any(count > MAX_SOURCE_LAYERS for count in counts.values()):
         raise ValueError("a picture can include at most 4 sources")
     camera_id = _token(raw.get("id"), fallback=existing.id if existing else None)
     return Camera(

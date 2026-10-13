@@ -23,7 +23,7 @@ PRE_AUTH = {
 
 PROFILE_TOKEN = "main"
 SUB_TOKEN = "sub"
-FIRMWARE = "1.0.17"
+FIRMWARE = "1.0.18"
 
 
 @dataclass

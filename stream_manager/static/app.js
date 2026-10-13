@@ -507,7 +507,7 @@
     return Math.min(high, Math.max(low, value));
   }
 
-  function blankLayer(type, sources) {
+  function blankLayer(type, sources, layoutSource) {
     const layer = {
       id: rid(),
       type: type,
@@ -517,7 +517,8 @@
       h: type === "text" ? 0.14 : 0.42,
       z: 0,
       source_id: sources && sources[0] ? sources[0].id : "",
-      text: type === "text" ? "Label" : "",
+      layout_source: layoutSource || "",
+      text: type === "text" ? "{name}" : "",
       font_size: 32,
       color: "#ECF8FD",
       align: "center",
@@ -528,21 +529,32 @@
     return layer;
   }
 
-  function layerName(layer, sources) {
-    if (layer.type === "text") return layer.text || "Text";
+  function fillText(text, camera, sourceId) {
+    const source = (camera.sources || []).find(function (item) { return item.id === sourceId; });
+    const name = source ? (source.name || "") : "";
+    return String(text || "").split("{name}").join(name).split("{source}").join(name).split("{camera}").join(camera.name || "");
+  }
+
+  function layerName(layer, camera) {
+    const sources = camera.sources || [];
+    if (layer.type === "text") return fillText(layer.text, camera, layer.layout_source) || "Text";
     if (layer.type === "box") return "Box";
-    const source = (sources || []).find(function (item) { return item.id === layer.source_id; });
+    const source = sources.find(function (item) { return item.id === layer.source_id; });
     return source ? source.name || "Source" : "Source";
   }
 
-  function designerSection(camera) {
+  function designerSection(camera, layoutSource) {
     const width = (camera.output && camera.output.width) || 1920;
     const height = (camera.output && camera.output.height) || 1080;
     const tiles = (camera.runtime && camera.runtime.tiles) || {};
-    const layers = (camera.layers || []).slice().sort(function (a, b) { return a.z - b.z; });
+    const layers = (camera.layers || []).filter(function (layer) { return layer.layout_source === layoutSource; }).sort(function (a, b) { return a.z - b.z; });
+    const layoutOptions = (camera.sources || []).map(function (source) {
+      const designed = (camera.layers || []).some(function (layer) { return layer.layout_source === source.id; });
+      return '<option value="' + esc(source.id) + '"' + (source.id === layoutSource ? " selected" : "") + ">" + esc(source.name || source.id) + (designed ? " · designed" : "") + "</option>";
+    }).join("");
     const stage = layers.map(function (layer) {
       const slate = layer.type === "source" && tiles[layer.id] === "slate";
-      const label = slate ? "No source" : layerName(layer, camera.sources);
+      const label = slate ? "No source" : layerName(layer, camera);
       return '<div class="layer ' + layer.type + (slate ? " slate" : "") + '" role="group" aria-label="' + esc(label) + '" data-layer="' + esc(layer.id) + '" style="left:' +
         (layer.x * 100) + "%;top:" + (layer.y * 100) + "%;width:" + (layer.w * 100) + "%;height:" + (layer.h * 100) + '%;">' +
         '<span class="layer-label">' + esc(label) + "</span>" +
@@ -558,6 +570,9 @@
         extra = '<label class="field">Source<select data-field="source_id" data-layer="' + esc(layer.id) + '">' + sourceOptions + "</select></label>";
       } else if (layer.type === "text") {
         extra = '<label class="field">Text<input data-field="text" data-layer="' + esc(layer.id) + '" maxlength="80" value="' + esc(layer.text) + '"></label>' +
+          '<div class="token-row"><button type="button" class="btn-ghost" data-act="insert-token" data-token="{name}" data-i="' + esc(layer.id) + '">Source name</button>' +
+          '<button type="button" class="btn-ghost" data-act="insert-token" data-token="{camera}" data-i="' + esc(layer.id) + '">Camera name</button></div>' +
+          '<p class="help">Use {name} for this source’s name and {camera} for the camera name.</p>' +
           '<div class="fields three"><label class="field">Size<input data-field="font_size" data-layer="' + esc(layer.id) + '" type="number" min="12" max="160" value="' + esc(layer.font_size) + '"></label>' +
           '<label class="field">Color<input data-field="color" data-layer="' + esc(layer.id) + '" type="color" value="' + esc(layer.color) + '"></label>' +
           '<label class="field">Align<select data-field="align" data-layer="' + esc(layer.id) + '">' +
@@ -568,7 +583,7 @@
         extra = '<div class="fields two"><label class="field">Fill<input data-field="fill" data-layer="' + esc(layer.id) + '" type="color" value="' + esc(layer.fill) + '"></label>' +
           '<label class="field">Cover %<input data-field="opacity" data-layer="' + esc(layer.id) + '" type="number" min="0" max="100" value="' + Math.round(layer.opacity * 100) + '"></label></div>';
       }
-      return '<article class="subcard" data-layer-card="' + esc(layer.id) + '"><div class="subcard-head"><h3>' + esc(layerName(layer, camera.sources)) + "</h3>" +
+      return '<article class="subcard" data-layer-card="' + esc(layer.id) + '"><div class="subcard-head"><h3>' + esc(layerName(layer, camera)) + "</h3>" +
         (slate ? '<span class="pill bad">No source</span>' : "") +
         '<div class="tools">' +
         '<button type="button" class="tool" data-act="layer-up" data-i="' + esc(layer.id) + '" aria-label="Bring forward">' + iconUp + "</button>" +
@@ -580,7 +595,9 @@
         '<label class="field">W %<input data-field="w" data-layer="' + esc(layer.id) + '" type="number" min="8" max="100" value="' + Math.round(layer.w * 100) + '"></label>' +
         '<label class="field">H %<input data-field="h" data-layer="' + esc(layer.id) + '" type="number" min="8" max="100" value="' + Math.round(layer.h * 100) + '"></label></div></article>';
     }).join("");
-    return formSection("5", "sec-designer", "Picture designer", "Arrange sources, text, and boxes on the picture UniFi Protect keeps playing. If a source drops, that tile shows No source and the stream stays up. Anything on this canvas turns off timed switching and entity rules.",
+    return formSection("5", "sec-designer", "Picture designer", "Each source in automatic switching has its own picture. If a tile’s source drops, that tile shows No source and the stream stays up until the switch changes layout.",
+      '<label class="field">Layout for<select name="layout_source">' + layoutOptions + "</select></label>" +
+      '<p class="help">Timed switching and entity rules show the layout for the source they pick. A source with no layers plays full frame.</p>' +
       '<div class="designer-tools">' +
       '<button type="button" class="btn-secondary" data-act="add-tile">' + iconPlus + "Source</button>" +
       '<button type="button" class="btn-secondary" data-act="add-text">' + iconPlus + "Text</button>" +
@@ -588,7 +605,7 @@
       '<div class="stage-wrap"><div class="stage" data-stage style="aspect-ratio:' + width + " / " + height + ';">' +
       (stage || '<p class="stage-empty">Add a source, some text, or a box.</p>') +
       "</div></div>" +
-      '<div class="layer-list">' + (cards || '<p class="help">The published stream is a single source until you add a layer.</p>') + "</div>");
+      '<div class="layer-list">' + (cards || '<p class="help">This switch plays full frame until you add a layer.</p>') + "</div>");
   }
 
   function placeLayer(node, layer) {
@@ -659,7 +676,7 @@
       } else if (field === "text") {
         layer.text = String(event.target.value || "").slice(0, 80);
         const label = form.querySelector('[data-layer="' + id + '"] .layer-label');
-        if (label) label.textContent = layer.text || "Text";
+        if (label) label.textContent = fillText(layer.text, camera, layer.layout_source) || "Text";
       } else if (field === "font_size") layer.font_size = clamp(Number(event.target.value) || 32, 12, 160);
       else if (field === "color") layer.color = event.target.value;
       else if (field === "align") layer.align = event.target.value;
@@ -730,6 +747,11 @@
     const cameras = (await api("/api/cameras")).cameras;
     const camera = id ? await api("/api/cameras/" + id) : blankCamera();
     camera.layers = camera.layers || [];
+    const firstSource = camera.fallback_source_id || (camera.sources[0] && camera.sources[0].id) || "";
+    camera.layers.forEach(function (layer) {
+      if (!layer.layout_source) layer.layout_source = firstSource;
+    });
+    let layoutSource = firstSource;
     renderNav(cameras, { name: "edit", id: id });
 
     function paint() {
@@ -806,9 +828,9 @@
       const video = formSection("4", "sec-video", "Video output", "What ONVIF clients receive. Protect works best with H.264 Main, 2 second keyframes and 2,000–4,000 kbps. An uploaded video keeps its sound as AAC. A GIF or a silent clip stays picture only.",
         outputFields(camera));
 
-      const designer = designerSection(camera);
+      const designer = designerSection(camera, layoutSource);
 
-      const automation = formSection("6", "sec-automation", "Automatic switching", "Rotate the sources on a timer, or switch when a Home Assistant entity changes. This stays off while the picture designer has layers.",
+      const automation = formSection("6", "sec-automation", "Automatic switching", "Rotate the sources on a timer, or switch when a Home Assistant entity changes. Each source shows the layout you designed for it. A source with no layers plays full frame.",
         '<label class="switch"><input type="checkbox" name="cycle_enabled"' + (camera.cycle_enabled ? " checked" : "") + '><span>Cycle through the sources in order</span></label>' +
         '<div class="fields inset"><label class="field">Show each source for<span class="suffix-field"><input name="cycle_seconds" type="number" min="5" max="3600" required value="' + esc(camera.cycle_seconds || 30) + '"><span class="suffix">sec</span></span></label></div>' +
         '<p class="help">The picture changes at the next keyframe, so the switch stays short. A matching rule below still takes over.</p>' +
@@ -872,6 +894,11 @@
         camera.source_interface = selected.getAttribute("data-name") || "";
       });
       form.addEventListener("change", function (event) {
+        if (event.target.name === "layout_source") {
+          layoutSource = event.target.value;
+          paint();
+          return;
+        }
         if (event.target.name !== "stype") return;
         readForm(form, camera);
         paint();
@@ -885,28 +912,35 @@
         event.preventDefault();
         readForm(form, camera);
         const layerId = button.getAttribute("data-i");
-        if (act === "add-tile" || act === "add-text" || act === "add-box" || act === "remove-layer" || act === "layer-up" || act === "layer-down") {
+        if (act === "add-tile" || act === "add-text" || act === "add-box" || act === "remove-layer" || act === "layer-up" || act === "layer-down" || act === "insert-token") {
           camera.layers = camera.layers || [];
           let designerError = "";
+          const mine = function () {
+            return camera.layers.filter(function (layer) { return layer.layout_source === layoutSource; }).sort(function (a, b) { return a.z - b.z; });
+          };
           if (act === "add-tile" || act === "add-text" || act === "add-box") {
             const kind = act === "add-tile" ? "source" : act === "add-text" ? "text" : "box";
             if (kind === "source" && !camera.sources.length) designerError = "Add a picture source first.";
-            else if (kind === "source" && camera.layers.filter(function (layer) { return layer.type === "source"; }).length >= 4) designerError = "A picture can include at most 4 sources.";
+            else if (kind === "source" && mine().filter(function (layer) { return layer.type === "source"; }).length >= 4) designerError = "This layout can include at most 4 sources.";
             else {
-              const layer = blankLayer(kind, camera.sources);
-              layer.z = camera.layers.reduce(function (max, item) { return Math.max(max, item.z); }, -1) + 1;
+              const layer = blankLayer(kind, camera.sources, layoutSource);
+              layer.z = mine().reduce(function (max, item) { return Math.max(max, item.z); }, -1) + 1;
               camera.layers.push(layer);
             }
           } else if (act === "remove-layer") {
             camera.layers = camera.layers.filter(function (layer) { return layer.id !== layerId; });
+          } else if (act === "insert-token") {
+            const layer = camera.layers.find(function (item) { return item.id === layerId; });
+            const token = button.getAttribute("data-token") || "";
+            if (layer && layer.text.length + token.length <= 80) layer.text += token;
           } else {
-            camera.layers.sort(function (a, b) { return a.z - b.z; });
-            const index = camera.layers.findIndex(function (layer) { return layer.id === layerId; });
+            const visible = mine();
+            const index = visible.findIndex(function (layer) { return layer.id === layerId; });
             const next = index + (act === "layer-up" ? 1 : -1);
-            if (index >= 0 && next >= 0 && next < camera.layers.length) {
-              const swap = camera.layers[index].z;
-              camera.layers[index].z = camera.layers[next].z;
-              camera.layers[next].z = swap;
+            if (index >= 0 && next >= 0 && next < visible.length) {
+              const swap = visible[index].z;
+              visible[index].z = visible[next].z;
+              visible[next].z = swap;
             }
           }
           paint();
@@ -928,9 +962,19 @@
             source_id: camera.sources[0] ? camera.sources[0].id : "",
           });
         } else if (act === "remove-source") {
+          const removed = camera.sources[index];
           camera.sources.splice(index, 1);
+          if (removed) {
+            camera.layers = (camera.layers || []).filter(function (layer) { return layer.layout_source !== removed.id; });
+            camera.layers.forEach(function (layer) {
+              if (layer.source_id === removed.id) layer.source_id = camera.sources[0] ? camera.sources[0].id : "";
+            });
+          }
           if (!camera.sources.some(function (source) { return source.id === camera.fallback_source_id; })) {
             camera.fallback_source_id = camera.sources[0] ? camera.sources[0].id : "";
+          }
+          if (!camera.sources.some(function (source) { return source.id === layoutSource; })) {
+            layoutSource = camera.fallback_source_id || (camera.sources[0] && camera.sources[0].id) || "";
           }
         } else if (act === "up" && index > 0) {
           camera.sources.splice(index - 1, 0, camera.sources.splice(index, 1)[0]);

@@ -1,6 +1,7 @@
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ["HASP_CANVAS_WRITERS"] = "0"
 
@@ -9,10 +10,12 @@ from onvif_proxy.compositor import (
     choose_writer,
     compositor_input,
     escape_drawtext,
+    resolve_text,
     slate_command,
 )
 from onvif_proxy.ha_client import Playback
 from onvif_proxy.models import OutputSettings, camera_from_dict, camera_to_dict
+from onvif_proxy.rules import Decision
 from onvif_proxy.stream_manager import StreamManager
 from onvif_proxy.engine import RecordingEngine
 
@@ -51,6 +54,7 @@ class CanvasModelTests(unittest.TestCase):
         self.assertEqual(again.layers[1].text, "Room: 1")
         self.assertEqual(again.layers[0].w, 0.6)
         self.assertEqual(again.layers[2].opacity, 0.5)
+        self.assertTrue(all(layer.layout_source == "live" for layer in again.layers))
 
     def test_four_source_limit(self):
         layers = [
@@ -59,6 +63,35 @@ class CanvasModelTests(unittest.TestCase):
         ]
         with self.assertRaises(ValueError):
             camera_from_dict(sample(layers=layers, cycle_enabled=False))
+
+    def test_each_switch_can_hold_four_sources(self):
+        layers = []
+        for source_id, start in (("live", 0), ("still", 4)):
+            layers.extend(
+                {
+                    "id": f"s{start + index}",
+                    "type": "source",
+                    "source_id": "live",
+                    "layout_source": source_id,
+                    "x": 0,
+                    "y": 0,
+                    "w": 0.2,
+                    "h": 0.2,
+                    "z": index,
+                }
+                for index in range(4)
+            )
+        camera = camera_from_dict(
+            sample(
+                cycle_enabled=False,
+                sources=[
+                    {"id": "live", "type": "rtsp", "name": "Printer", "url": "rtsp://printer.example/live"},
+                    {"id": "still", "type": "rtsp", "name": "Idle", "url": "rtsp://printer.example/idle"},
+                ],
+                layers=layers,
+            )
+        )
+        self.assertEqual(len(camera.layers), 8)
 
 
 class CanvasCommandTests(unittest.TestCase):
@@ -83,6 +116,28 @@ class CanvasCommandTests(unittest.TestCase):
         camera.layers[0].x = 0.2
         self.assertNotEqual(first, compositor_input(camera))
 
+    def test_text_uses_the_source_name_for_the_active_layout(self):
+        camera = camera_from_dict(
+            sample(
+                sources=[
+                    {"id": "live", "type": "rtsp", "name": "Printer", "url": "rtsp://printer.example/live"},
+                    {"id": "still", "type": "rtsp", "name": "Idle", "url": "rtsp://printer.example/idle"},
+                ],
+                layers=[
+                    {"id": "label", "type": "text", "layout_source": "live", "text": "{name}", "x": 0.1, "y": 0.1, "w": 0.4, "h": 0.2, "z": 1},
+                    {"id": "other", "type": "text", "layout_source": "still", "text": "Bay closed", "x": 0.1, "y": 0.1, "w": 0.4, "h": 0.2, "z": 1},
+                ],
+            )
+        )
+        live = compositor_input(camera, "live")
+        still = compositor_input(camera, "still")
+        self.assertIn("Printer", live)
+        self.assertNotIn("{name}", live)
+        self.assertNotIn("Bay closed", live)
+        self.assertIn("Bay closed", still)
+        self.assertNotIn("Printer", still)
+        self.assertEqual(resolve_text("{camera}", camera, "live"), "Desk")
+
     def test_drawtext_escapes_colons(self):
         self.assertIn("\\:", escape_drawtext("a:b"))
 
@@ -106,7 +161,9 @@ class CanvasPublishTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("width=", published)
         self.assertNotIn("#audio=", published)
         self.assertIn("sliced-threads=0:slices=1", "\n".join(engine.templates.values()))
-        self.assertEqual(streams.runtime["desk"]["reason"], "canvas")
+        self.assertEqual(streams.runtime["desk"]["reason"], "fallback")
+        self.assertEqual(streams.runtime["desk"]["source_id"], "live")
+        self.assertTrue(streams.runtime["desk"]["designed"])
         self.assertFalse(streams.runtime["desk"]["has_audio"])
 
         await streams.sync([camera], {}, FakeHa())
@@ -116,3 +173,56 @@ class CanvasPublishTests(unittest.IsolatedAsyncioTestCase):
         await streams.sync([camera], {}, FakeHa())
         self.assertIn("printer.example", engine.streams["desk"])
         self.assertNotEqual(engine.streams["desk"], published)
+
+    async def test_switching_publishes_the_layout_for_that_source(self):
+        camera = camera_from_dict(
+            sample(
+                cycle_seconds=30,
+                sources=[
+                    {"id": "live", "type": "rtsp", "name": "Printer", "url": "rtsp://printer.example/live"},
+                    {"id": "still", "type": "rtsp", "name": "Idle", "url": "rtsp://printer.example/idle"},
+                ],
+                layers=[
+                    {"id": "live-label", "type": "text", "layout_source": "live", "text": "{name}", "x": 0.1, "y": 0.1, "w": 0.4, "h": 0.2, "z": 1},
+                    {"id": "still-label", "type": "text", "layout_source": "still", "text": "Bay closed", "x": 0.2, "y": 0.2, "w": 0.4, "h": 0.2, "z": 1},
+                ],
+            )
+        )
+        engine = RecordingEngine()
+        streams = StreamManager(engine, ui_port=8099, onvif_port=8080, rtsp_port=8554, data_dir=Path("."))
+        with mock.patch("onvif_proxy.stream_manager.cycle_decision", return_value=Decision("live", None, "cycle")):
+            await streams.sync([camera], {}, FakeHa())
+        live = engine.streams["desk"]
+        self.assertTrue(live.startswith("ffmpeg:canvas#input="))
+        self.assertIn("Printer", "\n".join(engine.templates.values()))
+        self.assertNotIn("Bay closed", "\n".join(engine.templates.values()))
+        self.assertEqual(streams.runtime["desk"]["reason"], "cycle")
+        self.assertEqual(streams.runtime["desk"]["source_id"], "live")
+
+        with mock.patch("onvif_proxy.stream_manager.cycle_decision", return_value=Decision("still", None, "cycle")):
+            await streams.sync([camera], {}, FakeHa())
+        still = engine.streams["desk"]
+        self.assertNotEqual(still, live)
+        self.assertIn("Bay closed", "\n".join(engine.templates.values()))
+        self.assertEqual(streams.runtime["desk"]["source_id"], "still")
+
+        plain = camera_from_dict(
+            sample(
+                id="desk",
+                rules_enabled=True,
+                cycle_enabled=False,
+                fallback_source_id="live",
+                sources=[
+                    {"id": "live", "type": "rtsp", "name": "Printer", "url": "rtsp://printer.example/live"},
+                    {"id": "plain", "type": "rtsp", "name": "Plain", "url": "rtsp://printer.example/plain"},
+                ],
+                rules=[{"id": "r1", "entity_id": "switch.mode", "operator": "eq", "value": "plain", "source_id": "plain"}],
+                layers=[
+                    {"id": "live-label", "type": "text", "layout_source": "live", "text": "Designed", "x": 0.1, "y": 0.1, "w": 0.4, "h": 0.2, "z": 1},
+                ],
+            )
+        )
+        await streams.sync([plain], {"switch.mode": "plain"}, FakeHa())
+        self.assertIn("printer.example/plain", engine.streams["desk"])
+        self.assertEqual(streams.runtime["desk"]["reason"], "rule")
+        self.assertFalse(streams.runtime["desk"].get("designed"))
