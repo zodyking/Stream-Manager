@@ -12,6 +12,12 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
+from .compositor import (
+    CanvasBoard,
+    canvas_video_args,
+    compositor_input,
+    helper_stream_name,
+)
 from .engine import Go2RtcEngine
 from .models import Camera, Endpoints, OutputSettings, Source, endpoints_for
 from .rules import Decision, cycle_decision, decide, selected_source
@@ -191,6 +197,7 @@ class StreamManager:
         self.runtime: dict[str, dict] = {}
         self._applied: dict[str, str] = {}
         self._lock = asyncio.Lock()
+        self.canvas = CanvasBoard(data_dir, ui_port, rtsp_port)
 
     def urls(self, camera: Camera) -> Endpoints:
         return endpoints_for(camera, self.onvif_port, self.rtsp_port)
@@ -201,6 +208,8 @@ class StreamManager:
             for camera_id in list(self._applied):
                 if camera_id not in live:
                     await asyncio.to_thread(self.engine.remove, camera_id)
+                    for helper in self.canvas.drop(camera_id):
+                        await asyncio.to_thread(self.engine.remove, helper)
                     self._applied.pop(camera_id, None)
                     self.runtime.pop(camera_id, None)
             prepared = [await self._prepare(camera, states, ha) for camera in cameras]
@@ -210,7 +219,80 @@ class StreamManager:
             for record, src in prepared:
                 await self._commit(record, src)
 
+    def close(self) -> list[str]:
+        return self.canvas.drop_all()
+
+    def _canvas_source(self, camera: Camera) -> str:
+        video = _template(canvas_video_args(camera.output))
+        incoming = _template(compositor_input(camera))
+        return f"ffmpeg:canvas#input={incoming}#video={video}"
+
+    async def _prepare_canvas(self, camera: Camera, ha) -> tuple[dict, str | None]:
+        urls = self.urls(camera)
+        record = {
+            "camera_id": camera.id,
+            "enabled": camera.enabled,
+            "reason": "canvas",
+            "rule_id": None,
+            "source_id": "",
+            "source_name": "Designed picture",
+            "source_type": "canvas",
+            "source_kind": "canvas",
+            "rtsp_url": urls.stream,
+            "onvif_url": urls.device,
+            "snapshot_url": urls.snapshot,
+            "error": "",
+            "engine_error": "",
+            "has_audio": False,
+            "designed": True,
+            "tiles": {},
+        }
+        if not camera.enabled:
+            for helper in self.canvas.drop(camera.id):
+                await asyncio.to_thread(self.engine.remove, helper)
+            return record, None
+        ha_modes: dict[str, str | None] = {}
+        helpers: dict[str, str] = {}
+        helper_names: set[str] = set()
+        for layer in camera.layers:
+            if layer.type != "source":
+                continue
+            source = camera.source_map().get(layer.source_id)
+            if source is None:
+                continue
+            if source.type == "ha_camera":
+                playback = await ha.playback_for_entity(source.entity_id)
+                ha_modes[layer.source_id] = playback.mode
+                if playback.error:
+                    record["error"] = playback.error
+            if source.type == "onvif":
+                src, error = producer_for(
+                    source,
+                    data_dir=self.data_dir,
+                    ui_port=self.ui_port,
+                    ha_mode=None,
+                    ha_error=None,
+                )
+                name = helper_stream_name(camera.id, layer.id)
+                helper_names.add(name)
+                if src and not error:
+                    await asyncio.to_thread(self.engine.upsert, name, with_output(src, camera.output, audio=False))
+                    helpers[layer.id] = f"rtsp://127.0.0.1:{self.rtsp_port}/{name}"
+                elif error:
+                    record["error"] = error
+        for helper in self.canvas.note_helpers(camera.id, helper_names):
+            await asyncio.to_thread(self.engine.remove, helper)
+        self.canvas.sync_camera(camera, ha_modes=ha_modes, helpers=helpers)
+        record["tiles"] = self.canvas.modes(camera.id)
+        src = self._canvas_source(camera)
+        record["producer"] = src
+        return record, src
+
     async def _prepare(self, camera: Camera, states: dict[str, str], ha) -> tuple[dict, str | None]:
+        if camera.layers:
+            return await self._prepare_canvas(camera, ha)
+        for helper in self.canvas.drop(camera.id):
+            await asyncio.to_thread(self.engine.remove, helper)
         decision: Decision = decide(camera, states)
         if decision.reason in {"fallback", "no_source"}:
             cycled = cycle_decision(camera, time.monotonic())

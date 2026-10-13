@@ -517,3 +517,75 @@ main > .banner { margin-bottom: var(--sp-4); }
   .switch input, .switch input::before { transition: background 140ms ease, transform 140ms ease; }
   .btn, .btn-secondary, .btn-ghost, .tool, .copy-btn, .nav-link { transition: background 120ms ease, color 120ms ease; }
 }
+
+.designer-tools { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.designer-tools .btn-secondary { min-height: 44px; }
+.stage-wrap { margin-top: var(--sp-4); }
+.stage {
+  position: relative;
+  width: 100%;
+  max-width: 920px;
+  background: var(--sm-ink);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sub);
+  overflow: hidden;
+  touch-action: none;
+}
+.stage-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--text-2);
+}
+.layer {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px dashed var(--accent);
+  background: rgba(35, 141, 244, 0.18);
+  color: var(--text);
+  cursor: grab;
+  min-width: 8%;
+  min-height: 8%;
+}
+.layer.text { background: rgba(16, 44, 70, 0.55); }
+.layer.box { background: rgba(16, 44, 70, 0.72); }
+.layer.slate { border-color: var(--bad); }
+.layer.selected { border-style: solid; outline: 2px solid var(--accent); outline-offset: -2px; }
+.layer-label {
+  display: block;
+  padding: var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.layer .handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: nwse-resize;
+}
+.layer .handle::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 12px;
+  height: 12px;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+.fields.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.layer-list { display: grid; gap: var(--sp-3); margin-top: var(--sp-4); }
+@media (max-width: 720px) {
+  .fields.four { grid-template-columns: 1fr 1fr; }
+}

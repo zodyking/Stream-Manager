@@ -9,6 +9,8 @@ from pathlib import Path
 from ipaddress import IPv4Address
 
 SOURCE_TYPES = ("ha_camera", "rtsp", "onvif", "image", "media")
+LAYER_TYPES = ("source", "text", "box")
+MAX_SOURCE_LAYERS = 4
 MEDIA_EXTENSIONS = (".gif", ".mp4", ".webm", ".mov", ".mkv", ".m4v")
 OPERATORS = ("eq", "ne", "gt", "lt")
 RESOLUTIONS = ((1920, 1080), (1280, 720), (640, 480), (640, 360))
@@ -63,6 +65,27 @@ class Rule:
 
 
 @dataclass
+class Layer:
+    """One piece of the designed picture. Positions are fractions of the frame."""
+
+    id: str
+    type: str
+    x: float = 0.0
+    y: float = 0.0
+    w: float = 0.4
+    h: float = 0.3
+    z: int = 0
+    source_id: str = ""
+    text: str = ""
+    font_size: int = 32
+    color: str = "#ECF8FD"
+    align: str = "center"
+    fill: str = "#102C46"
+    border: str = ""
+    opacity: float = 0.85
+
+
+@dataclass
 class OutputSettings:
     """Encoder settings advertised on ONVIF and applied to the published RTSP stream."""
 
@@ -97,6 +120,7 @@ class Camera:
     fallback_source_id: str = ""
     sources: list[Source] = field(default_factory=list)
     rules: list[Rule] = field(default_factory=list)
+    layers: list[Layer] = field(default_factory=list)
     endpoint_uuid: str = ""
     scopes_extra: list[str] = field(default_factory=list)
     discovery_mode: str = "Discoverable"
@@ -230,6 +254,73 @@ def _bounded_int(value: object, default: int, low: int, high: int, label: str) -
     return number
 
 
+def _fraction(value: object, default: float, label: str) -> float:
+    if value is None or value == "":
+        number = default
+    else:
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} must be a number") from exc
+    if not 0 <= number <= 1:
+        raise ValueError(f"{label} must be between 0 and 1")
+    return number
+
+
+def _color(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", text):
+        raise ValueError("colors must be hex, such as #ECF8FD")
+    return text.upper()
+
+
+def layer_from_dict(raw: dict, source_ids: set[str]) -> Layer:
+    if not isinstance(raw, dict):
+        raise ValueError("layer must be an object")
+    kind = str(raw.get("type") or "").strip()
+    if kind not in LAYER_TYPES:
+        raise ValueError("layer type must be source, text, or box")
+    width = _fraction(raw.get("w"), 0.4, "layer width")
+    height = _fraction(raw.get("h"), 0.3, "layer height")
+    if width <= 0 or height <= 0:
+        raise ValueError("layer width and height must be greater than 0")
+    align = str(raw.get("align") or "center").strip().casefold()
+    if align not in {"left", "center", "right"}:
+        raise ValueError("text align must be left, center, or right")
+    text = str(raw.get("text") or "").replace("\n", " ").strip()
+    if len(text) > 80:
+        raise ValueError("overlay text must be 80 characters or less")
+    source_id = str(raw.get("source_id") or "").strip()
+    if kind == "source":
+        if source_id not in source_ids:
+            raise ValueError("a source tile must use one of the camera's sources")
+    try:
+        opacity = float(raw.get("opacity") if raw.get("opacity") is not None else 0.85)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("box opacity must be a number") from exc
+    if not 0 <= opacity <= 1:
+        raise ValueError("box opacity must be between 0 and 1")
+    return Layer(
+        id=_token(raw.get("id")),
+        type=kind,
+        x=_fraction(raw.get("x"), 0.0, "layer x"),
+        y=_fraction(raw.get("y"), 0.0, "layer y"),
+        w=width,
+        h=height,
+        z=_bounded_int(raw.get("z"), 0, 0, 99, "layer order"),
+        source_id=source_id,
+        text=text,
+        font_size=_bounded_int(raw.get("font_size"), 32, 12, 160, "font size"),
+        color=_color(raw.get("color"), "#ECF8FD"),
+        align=align,
+        fill=_color(raw.get("fill"), "#102C46"),
+        border=_color(raw.get("border"), "") if str(raw.get("border") or "").strip() else "",
+        opacity=opacity,
+    )
+
+
 def output_from_dict(raw: object) -> OutputSettings:
     if raw is None:
         return OutputSettings()
@@ -292,6 +383,9 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
     fallback = str(raw.get("fallback_source_id") or "").strip()
     if fallback not in seen:
         raise ValueError("choose a fallback source")
+    layers = [layer_from_dict(item, seen) for item in raw.get("layers") or []]
+    if sum(1 for layer in layers if layer.type == "source") > MAX_SOURCE_LAYERS:
+        raise ValueError("a picture can include at most 4 sources")
     camera_id = _token(raw.get("id"), fallback=existing.id if existing else None)
     return Camera(
         id=camera_id,
@@ -315,6 +409,7 @@ def camera_from_dict(raw: dict, existing: Camera | None = None) -> Camera:
         fallback_source_id=fallback,
         sources=sources,
         rules=rules,
+        layers=layers,
         endpoint_uuid=(existing.endpoint_uuid if existing and existing.endpoint_uuid else "")
         or str(raw.get("endpoint_uuid") or "")
         or str(uuid.uuid4()),

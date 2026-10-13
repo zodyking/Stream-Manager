@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 
 from .config import load_settings
 from .server import serve
@@ -14,6 +15,8 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     settings = load_settings()
     logging.getLogger("onvif_proxy").info(
         "data %s ui %s onvif %s rtsp %s supervisor %s",

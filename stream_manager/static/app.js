@@ -393,6 +393,7 @@
       fallback_source_id: source.id,
       sources: [source],
       rules: [],
+      layers: [],
       output: outputOf({}),
     };
   }
@@ -502,6 +503,179 @@
       '<button type="button" class="tool danger" data-act="remove-rule" data-i="' + index + '" aria-label="Remove rule">' + iconTrash + "</button></div></div>";
   }
 
+  function clamp(value, low, high) {
+    return Math.min(high, Math.max(low, value));
+  }
+
+  function blankLayer(type, sources) {
+    const layer = {
+      id: rid(),
+      type: type,
+      x: 0.06,
+      y: 0.06,
+      w: type === "text" ? 0.42 : 0.46,
+      h: type === "text" ? 0.14 : 0.42,
+      z: 0,
+      source_id: sources && sources[0] ? sources[0].id : "",
+      text: type === "text" ? "Label" : "",
+      font_size: 32,
+      color: "#ECF8FD",
+      align: "center",
+      fill: "#102C46",
+      border: "",
+      opacity: 0.85,
+    };
+    return layer;
+  }
+
+  function layerName(layer, sources) {
+    if (layer.type === "text") return layer.text || "Text";
+    if (layer.type === "box") return "Box";
+    const source = (sources || []).find(function (item) { return item.id === layer.source_id; });
+    return source ? source.name || "Source" : "Source";
+  }
+
+  function designerSection(camera) {
+    const width = (camera.output && camera.output.width) || 1920;
+    const height = (camera.output && camera.output.height) || 1080;
+    const tiles = (camera.runtime && camera.runtime.tiles) || {};
+    const layers = (camera.layers || []).slice().sort(function (a, b) { return a.z - b.z; });
+    const stage = layers.map(function (layer) {
+      const slate = layer.type === "source" && tiles[layer.id] === "slate";
+      const label = slate ? "No source" : layerName(layer, camera.sources);
+      return '<div class="layer ' + layer.type + (slate ? " slate" : "") + '" role="group" aria-label="' + esc(label) + '" data-layer="' + esc(layer.id) + '" style="left:' +
+        (layer.x * 100) + "%;top:" + (layer.y * 100) + "%;width:" + (layer.w * 100) + "%;height:" + (layer.h * 100) + '%;">' +
+        '<span class="layer-label">' + esc(label) + "</span>" +
+        '<button type="button" class="handle" data-resize="' + esc(layer.id) + '" aria-label="Resize ' + esc(label) + '"></button></div>';
+    }).join("");
+    const cards = layers.slice().reverse().map(function (layer) {
+      const slate = layer.type === "source" && tiles[layer.id] === "slate";
+      const sourceOptions = camera.sources.map(function (source) {
+        return '<option value="' + esc(source.id) + '"' + (layer.source_id === source.id ? " selected" : "") + ">" + esc(source.name || source.id) + "</option>";
+      }).join("");
+      let extra = "";
+      if (layer.type === "source") {
+        extra = '<label class="field">Source<select data-field="source_id" data-layer="' + esc(layer.id) + '">' + sourceOptions + "</select></label>";
+      } else if (layer.type === "text") {
+        extra = '<label class="field">Text<input data-field="text" data-layer="' + esc(layer.id) + '" maxlength="80" value="' + esc(layer.text) + '"></label>' +
+          '<div class="fields three"><label class="field">Size<input data-field="font_size" data-layer="' + esc(layer.id) + '" type="number" min="12" max="160" value="' + esc(layer.font_size) + '"></label>' +
+          '<label class="field">Color<input data-field="color" data-layer="' + esc(layer.id) + '" type="color" value="' + esc(layer.color) + '"></label>' +
+          '<label class="field">Align<select data-field="align" data-layer="' + esc(layer.id) + '">' +
+          ["left", "center", "right"].map(function (align) {
+            return '<option value="' + align + '"' + (layer.align === align ? " selected" : "") + ">" + align + "</option>";
+          }).join("") + "</select></label></div>";
+      } else {
+        extra = '<div class="fields two"><label class="field">Fill<input data-field="fill" data-layer="' + esc(layer.id) + '" type="color" value="' + esc(layer.fill) + '"></label>' +
+          '<label class="field">Cover %<input data-field="opacity" data-layer="' + esc(layer.id) + '" type="number" min="0" max="100" value="' + Math.round(layer.opacity * 100) + '"></label></div>';
+      }
+      return '<article class="subcard" data-layer-card="' + esc(layer.id) + '"><div class="subcard-head"><h3>' + esc(layerName(layer, camera.sources)) + "</h3>" +
+        (slate ? '<span class="pill bad">No source</span>' : "") +
+        '<div class="tools">' +
+        '<button type="button" class="tool" data-act="layer-up" data-i="' + esc(layer.id) + '" aria-label="Bring forward">' + iconUp + "</button>" +
+        '<button type="button" class="tool" data-act="layer-down" data-i="' + esc(layer.id) + '" aria-label="Send backward">' + iconDown + "</button>" +
+        '<button type="button" class="tool danger" data-act="remove-layer" data-i="' + esc(layer.id) + '" aria-label="Remove layer">' + iconTrash + "</button></div></div>" +
+        extra +
+        '<div class="fields four"><label class="field">X %<input data-field="x" data-layer="' + esc(layer.id) + '" type="number" min="0" max="100" value="' + Math.round(layer.x * 100) + '"></label>' +
+        '<label class="field">Y %<input data-field="y" data-layer="' + esc(layer.id) + '" type="number" min="0" max="100" value="' + Math.round(layer.y * 100) + '"></label>' +
+        '<label class="field">W %<input data-field="w" data-layer="' + esc(layer.id) + '" type="number" min="8" max="100" value="' + Math.round(layer.w * 100) + '"></label>' +
+        '<label class="field">H %<input data-field="h" data-layer="' + esc(layer.id) + '" type="number" min="8" max="100" value="' + Math.round(layer.h * 100) + '"></label></div></article>';
+    }).join("");
+    return formSection("5", "sec-designer", "Picture designer", "Arrange sources, text, and boxes on the picture UniFi Protect keeps playing. If a source drops, that tile shows No source and the stream stays up. Anything on this canvas turns off timed switching and entity rules.",
+      '<div class="designer-tools">' +
+      '<button type="button" class="btn-secondary" data-act="add-tile">' + iconPlus + "Source</button>" +
+      '<button type="button" class="btn-secondary" data-act="add-text">' + iconPlus + "Text</button>" +
+      '<button type="button" class="btn-secondary" data-act="add-box">' + iconPlus + "Box</button></div>" +
+      '<div class="stage-wrap"><div class="stage" data-stage style="aspect-ratio:' + width + " / " + height + ';">' +
+      (stage || '<p class="stage-empty">Add a source, some text, or a box.</p>') +
+      "</div></div>" +
+      '<div class="layer-list">' + (cards || '<p class="help">The published stream is a single source until you add a layer.</p>') + "</div>");
+  }
+
+  function placeLayer(node, layer) {
+    node.style.left = (layer.x * 100) + "%";
+    node.style.top = (layer.y * 100) + "%";
+    node.style.width = (layer.w * 100) + "%";
+    node.style.height = (layer.h * 100) + "%";
+  }
+
+  function bindDesigner(form, camera) {
+    const stage = form.querySelector("[data-stage]");
+    if (!stage || stage.dataset.bound) return;
+    stage.dataset.bound = "1";
+    stage.addEventListener("pointerdown", function (event) {
+      const layerEl = event.target.closest("[data-layer]");
+      if (!layerEl) return;
+      const id = layerEl.getAttribute("data-layer");
+      const layer = (camera.layers || []).find(function (item) { return item.id === id; });
+      if (!layer) return;
+      event.preventDefault();
+      layerEl.setPointerCapture(event.pointerId);
+      stage.querySelectorAll(".layer").forEach(function (node) {
+        node.classList.toggle("selected", node.getAttribute("data-layer") === id);
+      });
+      const resizing = !!event.target.closest("[data-resize]");
+      const rect = stage.getBoundingClientRect();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const orig = { x: layer.x, y: layer.y, w: layer.w, h: layer.h };
+      function move(ev) {
+        const dx = (ev.clientX - startX) / rect.width;
+        const dy = (ev.clientY - startY) / rect.height;
+        if (resizing) {
+          layer.w = clamp(orig.w + dx, 0.08, 1 - orig.x);
+          layer.h = clamp(orig.h + dy, 0.08, 1 - orig.y);
+        } else {
+          layer.x = clamp(orig.x + dx, 0, 1 - layer.w);
+          layer.y = clamp(orig.y + dy, 0, 1 - layer.h);
+        }
+        placeLayer(layerEl, layer);
+        ["x", "y", "w", "h"].forEach(function (field) {
+          const input = form.querySelector('[data-field="' + field + '"][data-layer="' + id + '"]');
+          if (input) input.value = String(Math.round(layer[field] * 100));
+        });
+      }
+      function finish() {
+        layerEl.removeEventListener("pointermove", move);
+        layerEl.removeEventListener("pointerup", finish);
+        layerEl.removeEventListener("pointercancel", finish);
+      }
+      layerEl.addEventListener("pointermove", move);
+      layerEl.addEventListener("pointerup", finish);
+      layerEl.addEventListener("pointercancel", finish);
+    });
+    form.addEventListener("input", onDesignerField);
+    form.addEventListener("change", onDesignerField);
+    function onDesignerField(event) {
+      const field = event.target.getAttribute("data-field");
+      const id = event.target.getAttribute("data-layer");
+      if (!field || !id) return;
+      const layer = (camera.layers || []).find(function (item) { return item.id === id; });
+      if (!layer) return;
+      if (field === "x" || field === "y" || field === "w" || field === "h") {
+        const number = clamp(Number(event.target.value) / 100, field === "w" || field === "h" ? 0.08 : 0, 1);
+        layer[field] = number;
+        if (layer.x + layer.w > 1) layer.w = Math.max(0.08, 1 - layer.x);
+        if (layer.y + layer.h > 1) layer.h = Math.max(0.08, 1 - layer.y);
+      } else if (field === "text") {
+        layer.text = String(event.target.value || "").slice(0, 80);
+        const label = form.querySelector('[data-layer="' + id + '"] .layer-label');
+        if (label) label.textContent = layer.text || "Text";
+      } else if (field === "font_size") layer.font_size = clamp(Number(event.target.value) || 32, 12, 160);
+      else if (field === "color") layer.color = event.target.value;
+      else if (field === "align") layer.align = event.target.value;
+      else if (field === "fill") layer.fill = event.target.value;
+      else if (field === "opacity") layer.opacity = clamp(Number(event.target.value) / 100, 0, 1);
+      else if (field === "source_id") {
+        layer.source_id = event.target.value;
+        const source = camera.sources.find(function (item) { return item.id === layer.source_id; });
+        const label = form.querySelector('[data-layer="' + id + '"] .layer-label');
+        if (label && source) label.textContent = source.name || "Source";
+      }
+      const node = form.querySelector('.layer[data-layer="' + id + '"]');
+      if (node) placeLayer(node, layer);
+    }
+  }
+
   function formSection(step, id, title, lead, body) {
     return '<section class="card section" id="' + id + '" aria-labelledby="' + id + '-title">' +
       '<header class="section-head"><span class="step" aria-hidden="true">' + step + "</span><div>" +
@@ -521,7 +695,7 @@
       [false, "Turn on discovery in Protect", "Settings › System › Discover Third-Party Cameras."],
       [false, "Click to Adopt", login],
     ];
-    const toc = [["sec-basics", "Camera"], ["sec-sources", "Picture sources"], ["sec-network", "Network"], ["sec-video", "Video output"], ["sec-automation", "Automatic switching"]];
+    const toc = [["sec-basics", "Camera"], ["sec-sources", "Picture sources"], ["sec-network", "Network"], ["sec-video", "Video output"], ["sec-designer", "Picture designer"], ["sec-automation", "Automatic switching"]];
     return '<aside class="summary" aria-label="Camera summary">' +
       '<section class="card summary-card"><p class="eyebrow">Published as</p>' +
       '<p class="summary-address">' + esc(address || (id ? camera.listen_ip : "Assigned on save")) + "</p>" +
@@ -555,6 +729,7 @@
     const entityPayload = await api("/api/entities");
     const cameras = (await api("/api/cameras")).cameras;
     const camera = id ? await api("/api/cameras/" + id) : blankCamera();
+    camera.layers = camera.layers || [];
     renderNav(cameras, { name: "edit", id: id });
 
     function paint() {
@@ -631,7 +806,9 @@
       const video = formSection("4", "sec-video", "Video output", "What ONVIF clients receive. Protect works best with H.264 Main, 2 second keyframes and 2,000–4,000 kbps. An uploaded video keeps its sound as AAC. A GIF or a silent clip stays picture only.",
         outputFields(camera));
 
-      const automation = formSection("5", "sec-automation", "Automatic switching", "Rotate the sources on a timer, or switch when a Home Assistant entity changes.",
+      const designer = designerSection(camera);
+
+      const automation = formSection("6", "sec-automation", "Automatic switching", "Rotate the sources on a timer, or switch when a Home Assistant entity changes. This stays off while the picture designer has layers.",
         '<label class="switch"><input type="checkbox" name="cycle_enabled"' + (camera.cycle_enabled ? " checked" : "") + '><span>Cycle through the sources in order</span></label>' +
         '<div class="fields inset"><label class="field">Show each source for<span class="suffix-field"><input name="cycle_seconds" type="number" min="5" max="3600" required value="' + esc(camera.cycle_seconds || 30) + '"><span class="suffix">sec</span></span></label></div>' +
         '<p class="help">The picture changes at the next keyframe, so the switch stays short. A matching rule below still takes over.</p>' +
@@ -648,7 +825,7 @@
         '<form id="camera-form" class="stack">' +
         '<datalist id="camera-entities">' + cameraList + "</datalist>" +
         '<datalist id="all-entities">' + allList + "</datalist>" +
-        basics + sources + network + video + automation +
+        basics + sources + network + video + designer + automation +
         '<div class="savebar"><p id="form-error" class="banner error" role="alert" hidden></p>' +
         '<div class="row"><button class="btn" type="submit">' + (id ? "Save changes" : "Create camera") + "</button>" +
         '<a class="btn-ghost" href="' + (id ? "#/cameras/" + id + "/status" : "#/") + '">Cancel</a>' +
@@ -707,6 +884,39 @@
         if (button.type === "submit") return;
         event.preventDefault();
         readForm(form, camera);
+        const layerId = button.getAttribute("data-i");
+        if (act === "add-tile" || act === "add-text" || act === "add-box" || act === "remove-layer" || act === "layer-up" || act === "layer-down") {
+          camera.layers = camera.layers || [];
+          let designerError = "";
+          if (act === "add-tile" || act === "add-text" || act === "add-box") {
+            const kind = act === "add-tile" ? "source" : act === "add-text" ? "text" : "box";
+            if (kind === "source" && !camera.sources.length) designerError = "Add a picture source first.";
+            else if (kind === "source" && camera.layers.filter(function (layer) { return layer.type === "source"; }).length >= 4) designerError = "A picture can include at most 4 sources.";
+            else {
+              const layer = blankLayer(kind, camera.sources);
+              layer.z = camera.layers.reduce(function (max, item) { return Math.max(max, item.z); }, -1) + 1;
+              camera.layers.push(layer);
+            }
+          } else if (act === "remove-layer") {
+            camera.layers = camera.layers.filter(function (layer) { return layer.id !== layerId; });
+          } else {
+            camera.layers.sort(function (a, b) { return a.z - b.z; });
+            const index = camera.layers.findIndex(function (layer) { return layer.id === layerId; });
+            const next = index + (act === "layer-up" ? 1 : -1);
+            if (index >= 0 && next >= 0 && next < camera.layers.length) {
+              const swap = camera.layers[index].z;
+              camera.layers[index].z = camera.layers[next].z;
+              camera.layers[next].z = swap;
+            }
+          }
+          paint();
+          if (designerError) {
+            const error = document.getElementById("form-error");
+            error.hidden = false;
+            error.textContent = designerError;
+          }
+          return;
+        }
         const index = Number(button.getAttribute("data-i"));
         if (button.id === "add-source") camera.sources.push(blankSource());
         else if (button.id === "add-rule") {
@@ -769,6 +979,7 @@
           location.hash = "#/";
         });
       }
+      bindDesigner(form, camera);
       enhanceSelects(form);
     }
 

@@ -98,6 +98,8 @@ def build_app(settings: Settings | None = None) -> web.Application:
         _app["discovery"].stop()
         _app["aliases"].teardown()
         await ha.stop()
+        for helper in _app["streams"].close():
+            engine.remove(helper)
         engine.stop()
 
     app.on_startup.append(on_startup)
